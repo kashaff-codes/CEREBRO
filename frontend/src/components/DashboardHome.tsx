@@ -146,12 +146,12 @@ export const DashboardHome: React.FC<DashboardHomeProps> = ({ systemColor = 'blu
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
-  // Dynamic color palette mapping based on current Omnitrix state
+  // One palette: brass for the main series, sage and copper for the others.
   const colorPalette = {
     blue: {
-      primary: '#3b82f6', // Blue-500
-      secondary: '#8b5cf6', // Purple-500
-      accent: '#06b6d4', // Cyan-500
+      primary: '#C9A45C', // brass
+      secondary: '#86AD90', // sage
+      accent: '#D08A4E', // copper
       bgClass: 'bg-blue-500/10 border-blue-500/20 text-blue-400',
       textClass: 'text-blue-400',
       borderClass: 'border-blue-500/30',
@@ -389,9 +389,9 @@ export const DashboardHome: React.FC<DashboardHomeProps> = ({ systemColor = 'blu
           <div
             className={`absolute top-0 right-0 w-24 h-24 bg-gradient-to-br from-transparent to-slate-900/30 translate-x-12 -translate-y-12 rounded-full blur-xl`}
           />
-          <h3 className="text-sm font-bold font-mono tracking-widest text-slate-400 mb-6 flex items-center gap-2">
-            <Activity className={`w-4 h-4 ${palette.textClass}`} />[ THREAT ANALYTICS REAL-TIME
-            OVERVIEW ]
+          <h3 className="font-display text-[22px] text-slate-100 mb-6 flex items-center gap-3">
+            <Activity className={`w-4 h-4 ${palette.textClass}`} />
+            Activity over time
           </h3>
           {metricsError && (
             <p
@@ -415,24 +415,33 @@ export const DashboardHome: React.FC<DashboardHomeProps> = ({ systemColor = 'blu
                     <stop offset="95%" stopColor={palette.secondary} stopOpacity={0} />
                   </linearGradient>
                 </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
+                <CartesianGrid strokeDasharray="3 3" stroke="#222125" />
                 <XAxis
                   dataKey="name"
-                  stroke="#64748b"
-                  style={{ fontSize: 10, fontFamily: 'monospace' }}
+                  stroke="#7C776E"
+                  style={{ fontSize: 10, fontFamily: "'IBM Plex Mono', monospace" }}
                 />
-                <YAxis stroke="#64748b" style={{ fontSize: 10, fontFamily: 'monospace' }} />
+                <YAxis
+                  stroke="#7C776E"
+                  style={{ fontSize: 10, fontFamily: "'IBM Plex Mono', monospace" }}
+                />
                 <Tooltip
                   contentStyle={{
-                    backgroundColor: '#020617',
-                    borderColor: '#1e293b',
-                    color: '#f8fafc',
+                    backgroundColor: '#121215',
+                    borderColor: '#222125',
+                    color: '#ECE6D9',
                     borderRadius: 8,
-                    fontFamily: 'monospace',
+                    fontFamily: "'IBM Plex Mono', monospace",
                     fontSize: 11,
                   }}
                 />
-                <Legend wrapperStyle={{ fontSize: 11, fontFamily: 'monospace', paddingTop: 10 }} />
+                <Legend
+                  wrapperStyle={{
+                    fontSize: 11,
+                    fontFamily: "'IBM Plex Mono', monospace",
+                    paddingTop: 10,
+                  }}
+                />
                 <Area
                   type="monotone"
                   dataKey="fakeNews"
@@ -465,31 +474,41 @@ export const DashboardHome: React.FC<DashboardHomeProps> = ({ systemColor = 'blu
           <div
             className={`absolute top-0 right-0 w-24 h-24 bg-gradient-to-br from-transparent to-slate-900/30 translate-x-12 -translate-y-12 rounded-full blur-xl`}
           />
-          <h3 className="text-sm font-bold font-mono tracking-widest text-slate-400 mb-6 flex items-center gap-2">
-            <Globe className={`w-4 h-4 ${palette.textClass}`} />[ DETECTION EFFICIENCY RATIO ]
+          <h3 className="font-display text-[22px] text-slate-100 mb-6 flex items-center gap-3">
+            <Globe className={`w-4 h-4 ${palette.textClass}`} />
+            Examined and flagged
           </h3>
 
           <div className="h-80 w-full relative z-10">
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={threatData}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
+                <CartesianGrid strokeDasharray="3 3" stroke="#222125" />
                 <XAxis
                   dataKey="name"
-                  stroke="#64748b"
-                  style={{ fontSize: 10, fontFamily: 'monospace' }}
+                  stroke="#7C776E"
+                  style={{ fontSize: 10, fontFamily: "'IBM Plex Mono', monospace" }}
                 />
-                <YAxis stroke="#64748b" style={{ fontSize: 10, fontFamily: 'monospace' }} />
+                <YAxis
+                  stroke="#7C776E"
+                  style={{ fontSize: 10, fontFamily: "'IBM Plex Mono', monospace" }}
+                />
                 <Tooltip
                   contentStyle={{
-                    backgroundColor: '#020617',
-                    borderColor: '#1e293b',
-                    color: '#f8fafc',
+                    backgroundColor: '#121215',
+                    borderColor: '#222125',
+                    color: '#ECE6D9',
                     borderRadius: 8,
-                    fontFamily: 'monospace',
+                    fontFamily: "'IBM Plex Mono', monospace",
                     fontSize: 11,
                   }}
                 />
-                <Legend wrapperStyle={{ fontSize: 11, fontFamily: 'monospace', paddingTop: 10 }} />
+                <Legend
+                  wrapperStyle={{
+                    fontSize: 11,
+                    fontFamily: "'IBM Plex Mono', monospace",
+                    paddingTop: 10,
+                  }}
+                />
                 <Bar
                   dataKey="fakeNews"
                   fill={palette.primary}
@@ -520,10 +539,10 @@ export const DashboardHome: React.FC<DashboardHomeProps> = ({ systemColor = 'blu
           <div className="space-y-1.5">
             <h3 className="text-base font-black text-white flex items-center gap-2 font-mono tracking-wider">
               <ShieldAlert className="w-5 h-5 text-red-500 animate-pulse" />
-              THREAT FORENSIC DECRYPTION VAULT
+              Case log
             </h3>
             <p className="text-[10px] text-slate-500 font-mono tracking-wide">
-              Live secure cryptographic ledger syncing from network firewalls & AI scanning models
+              Every item CEREBRO has examined, newest first.
             </p>
           </div>
 
@@ -535,7 +554,7 @@ export const DashboardHome: React.FC<DashboardHomeProps> = ({ systemColor = 'blu
                 type="text"
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
-                placeholder="Query ledger..."
+                placeholder="Search the log"
                 className="w-full bg-slate-950 border border-slate-900 focus:border-slate-800 focus:ring-1 focus:ring-slate-800 rounded-lg pl-9 pr-3 py-1.5 text-xs text-slate-200 outline-none transition-all placeholder:text-slate-700 font-mono"
               />
             </div>
@@ -620,9 +639,7 @@ export const DashboardHome: React.FC<DashboardHomeProps> = ({ systemColor = 'blu
                   <FileText className="w-7 h-7" />
                 </div>
                 <div className="space-y-1 font-mono">
-                  <h4 className="text-xs font-bold text-slate-400">
-                    [ CRYPTOGRAPHIC VAULT STERILE ]
-                  </h4>
+                  <h4 className="text-xs font-bold text-slate-400">Nothing examined yet</h4>
                   <p className="text-[10px] text-slate-600 max-w-xs mx-auto leading-relaxed">
                     No anomalies found. Run threat intelligence network diagnostics or workspace
                     checks to log forensic traces.
@@ -769,10 +786,10 @@ export const DashboardHome: React.FC<DashboardHomeProps> = ({ systemColor = 'blu
                               </p>
                               <div className="flex items-center justify-between text-[8px] text-slate-600 font-mono pt-1.5 border-t border-slate-900 relative z-10">
                                 <div>
-                                  <span className="text-slate-500">INGRESS LINK:</span> users/
+                                  <span className="text-slate-500">Link:</span> users/
                                   {user?.id}/history/{item.id}
                                 </div>
-                                <div>[ CRYPTO_CLEARED_BY_ALGORITHM ]</div>
+                                <div>Cleared by the analyser</div>
                               </div>
                             </div>
                           </div>

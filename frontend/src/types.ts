@@ -14,12 +14,60 @@ export enum ThreatLevel {
   CRITICAL = 'Critical',
 }
 
+export interface ScoreComponent {
+  key: 'evidence' | 'fact_check' | 'language' | 'prior' | string;
+  label: string;
+  score: number | null;
+  weight: number;
+  share: number;
+  detail: string;
+}
+
+export interface EvidencePassage {
+  title: string;
+  url: string | null;
+  domain: string | null;
+  stance: 'entail' | 'contradict' | 'neutral';
+  confidence: number;
+  reliability: number;
+  snippet: string;
+}
+
+export interface TopicCard {
+  title: string;
+  url: string | null;
+  image: string | null;
+  summary: string;
+}
+
+export interface CheckedClaim {
+  text: string;
+  label: string;
+  probability: number; // P(true | evidence), 0..1
+  certainty: number; // how much evidence stands behind it, 0..1
+  support: number;
+  refute: number;
+  finding?: string;
+  explore?: string[];
+  topics?: TopicCard[];
+  evidence: EvidencePassage[];
+}
+
 export interface NewsAnalysisResult {
   credibilityScore: number; // 0 to 100
-  verdict: string; // "Credible", "Misleading", "Fake News"
+  verdict: string; // "Credible", "Disputed", "Unverified", "Misleading", "Fake News"
   summary: string;
   reasoning: string;
   sources: string[];
+  // How the score was built. Optional so older API responses still render.
+  confidence?: number;
+  confidence_label?: string;
+  breakdown?: ScoreComponent[];
+  claims?: CheckedClaim[];
+  evidence_sources?: Record<string, string>;
+  related?: { url: string; title: string; page_age?: string }[];
+  depth?: string;
+  score_source?: string;
 }
 
 export interface NetworkLog {

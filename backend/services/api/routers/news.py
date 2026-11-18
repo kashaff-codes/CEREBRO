@@ -492,8 +492,8 @@ async def _claims(request: Request, text: str) -> list[tuple[str, float]]:
                 for c in extracted if c.get("text", "").strip()]
     except Exception as exc:  # noqa: BLE001
         log.warning("claim extraction fell back to sentence split: %s", exc)
-        rows = [(s.strip(), 0.5) for s in re.split(r"(?<=[.!?])\s+", text)
-                if len(s.strip()) > 40]
+        from services.ml.providers.llm import split_sentences
+        rows = [(s, 0.5) for s in split_sentences(text)]
     rows.sort(key=lambda r: -r[1])
     return rows[:MAX_CLAIMS] or [(text.strip()[:500], 1.0)]
 

@@ -54,8 +54,8 @@ test.describe('visual regression', () => {
 
   test('sign-up screen', async ({ page }) => {
     await ready(page);
-    await page.getByText(/SIGN_UP \/ REGISTER/i).click();
-    await expect(page.getByText(/ANALYST IDENTITY/i)).toBeVisible();
+    await page.getByRole('tab', { name: 'Create account' }).click();
+    await expect(page.getByLabel('Full name')).toBeVisible();
     await expect(page).toHaveScreenshot('sign-up.png', { fullPage: true });
   });
 });

@@ -114,9 +114,7 @@ export const EmailScanner: React.FC = () => {
           <Mail className="w-6 h-6" />
         </div>
         <div>
-          <h2 className="text-lg font-bold text-white font-mono tracking-wider">
-            [ EMAIL FORENSICS ]
-          </h2>
+          <h2 className="text-lg font-bold text-white font-mono tracking-wider">Mail forensics</h2>
           <p className="text-xs text-slate-500 font-mono">
             Paste a full raw email (headers + body). ~35 deterministic signals — SPF/DKIM/DMARC,
             lookalike domains, homographs, URL tricks — no AI guesswork.
@@ -156,7 +154,7 @@ export const EmailScanner: React.FC = () => {
                 <RefreshCw className="h-3.5 w-3.5 animate-spin" /> ANALYZING…
               </>
             ) : (
-              'ANALYZE_MESSAGE'
+              'Analyse message'
             )}
           </button>
         </div>

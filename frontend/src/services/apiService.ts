@@ -35,9 +35,12 @@ async function postJSON<T>(path: string, body: unknown): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-export const analyzeNewsText = async (text: string): Promise<NewsAnalysisResult> => {
+export const analyzeNewsText = async (
+  text: string,
+  depth: 'standard' | 'deep' = 'standard',
+): Promise<NewsAnalysisResult> => {
   if (!text) throw new Error('Text is required for analysis');
-  return postJSON<NewsAnalysisResult>('/v1/analyze/news', { text });
+  return postJSON<NewsAnalysisResult>('/v1/analyze/news', { text, depth });
 };
 
 export const analyzeNetworkLogs = async (logs: NetworkLog[]): Promise<CyberAnalysisResult> => {

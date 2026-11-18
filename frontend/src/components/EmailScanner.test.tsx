@@ -11,7 +11,7 @@ const renderWithAuth = (ui: React.ReactNode) => render(<AuthProvider>{ui}</AuthP
 describe('EmailScanner', () => {
   it('renders the forensics panel', async () => {
     renderWithAuth(<EmailScanner />);
-    expect(await screen.findByText(/EMAIL FORENSICS/)).toBeInTheDocument();
+    expect(await screen.findByText(/Mail forensics/i)).toBeInTheDocument();
   });
 
   it('loads the sample and shows a verdict with indicators (MSW-mocked API)', async () => {
@@ -19,7 +19,7 @@ describe('EmailScanner', () => {
     renderWithAuth(<EmailScanner />);
 
     await user.click(screen.getByText(/load sample phishing email/i));
-    await user.click(screen.getByRole('button', { name: /ANALYZE_MESSAGE/i }));
+    await user.click(screen.getByRole('button', { name: /Analyse message/i }));
 
     // A concrete indicator + the verdict from the mocked forensics response.
     // (Exact 'phishing' avoids also matching the "load sample phishing email" link.)

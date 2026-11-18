@@ -583,6 +583,27 @@ _CLAIM_SYSTEM = (
 )
 
 
+_LEAD = re.compile(r"^(?:and|also|plus|so|but|or|then|that|is it true that|did you know that|"
+                   r"i (?:saw|read|heard)(?: on \w+)? that)\s+", re.IGNORECASE)
+
+
+def split_sentences(text: str) -> list[str]:
+    """
+    The no-LLM fallback for finding claims: sentence and question boundaries,
+    with conversational lead-ins removed. It used to drop anything under 40
+    characters, which silently discarded short questions such as "eiffel
+    tower is in london right?" when they came first.
+    """
+    out: list[str] = []
+    for part in re.split(r"(?<=[.!?])\s+|\n+|;\s+", text or ""):
+        s = part.strip().strip(",")
+        for _ in range(2):
+            s = _LEAD.sub("", s).strip()
+        if len(s) >= 12 and s not in out:
+            out.append(s)
+    return out
+
+
 async def extract_claims(
     provider: LLMProvider, text: str, max_claims: int = 12
 ) -> list[dict[str, Any]]:
@@ -605,8 +626,7 @@ async def extract_claims(
         claims = parsed.get("claims", [])
     except (json.JSONDecodeError, AttributeError):
         # Fallback: naive sentence split. Degraded, but the pipeline continues.
-        sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if len(s.strip()) > 40]
-        claims = [{"text": s, "check_worthy": 0.5} for s in sentences[:max_claims]]
+        claims = [{"text": s, "check_worthy": 0.5} for s in split_sentences(text)[:max_claims]]
     return claims[:max_claims]
 
 

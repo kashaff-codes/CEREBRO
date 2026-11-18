@@ -216,3 +216,13 @@ def test_word_overlap_alone_never_claims_credible():
     assert out["score"] >= 65            # the lean is still shown
     assert out["verdict"] == "Unverified"
     assert out["confidence_label"] == "Low"
+
+
+def test_fallback_claim_split_keeps_short_questions_and_drops_lead_ins():
+    from services.ml.providers.llm import split_sentences
+    assert split_sentences(
+        "eiffel tower is in london right? and NASA landed astronauts on the Moon in 1969"
+    ) == ["eiffel tower is in london right?", "NASA landed astronauts on the Moon in 1969"]
+    assert split_sentences("I saw on reddit that the WHO declared a pandemic. Also that "
+                           "Pakistan won the 1992 cricket world cup.") == [
+        "the WHO declared a pandemic.", "Pakistan won the 1992 cricket world cup."]

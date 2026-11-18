@@ -1,567 +1,666 @@
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { analyzeNewsText } from '../services/apiService';
-import { NewsAnalysisResult } from '../types';
+import type { CheckedClaim, NewsAnalysisResult, ScoreComponent } from '../types';
 import { useAuth } from '../context/AuthContext';
 import { jsPDF } from 'jspdf';
 import { playCyberSFX } from '../utils/audio';
-import {
-  Newspaper,
-  Share2,
-  Terminal,
-  AlertTriangle,
-  CheckCircle2,
-  Download,
-  AlertOctagon,
-  RefreshCw,
-} from 'lucide-react';
-import { motion, AnimatePresence } from 'motion/react';
+import { ArrowUpRight, Download, Search, Telescope, Share2 } from 'lucide-react';
+
+/**
+ * Verify a claim.
+ *
+ * The page is built around one promise: every number can be taken apart. The
+ * score is shown with the components it was computed from, each claim with the
+ * passages that support or refute it, and each passage with its source and how
+ * much that source is trusted. Verdict colours always travel with a word and a
+ * glyph, never alone.
+ */
+
+const VERDICT: Record<string, { tone: string; glyph: string; line: string }> = {
+  Credible: { tone: '#86AD90', glyph: '●', line: 'The evidence supports it.' },
+  Disputed: { tone: '#C9A45C', glyph: '◆', line: 'Credible sources disagree.' },
+  Unverified: { tone: '#A29C90', glyph: '○', line: 'Not enough evidence either way.' },
+  Misleading: { tone: '#D08A4E', glyph: '▲', line: 'Partly wrong, or missing context.' },
+  'Fake News': { tone: '#D2654E', glyph: '✕', line: 'The evidence contradicts it.' },
+};
+const verdictOf = (v: string) => VERDICT[v] ?? VERDICT.Unverified;
+
+const COMPONENT_TONE: Record<string, string> = {
+  evidence: '#C9A45C',
+  fact_check: '#86AD90',
+  language: '#7C776E',
+  prior: '#38363A',
+};
+
+const STANCE = {
+  entail: { glyph: '✓', word: 'Supports', tone: '#86AD90' },
+  contradict: { glyph: '✕', word: 'Refutes', tone: '#D2654E' },
+  neutral: { glyph: '–', word: 'Context', tone: '#7C776E' },
+} as const;
+
+const EXAMPLES = [
+  'eiffel tower is in london right',
+  'Is it true the Great Wall is visible from space, goldfish have a 3 second memory, and Einstein failed math?',
+  'whats going on with the nvidia case, did jensen huang get sued',
+];
+
+const STEPS = [
+  'Reading what you pasted',
+  'Separating the claims',
+  'Searching the web and the archive',
+  'Weighing each source',
+  'Scoring',
+];
+
+/** Animated count-up for the headline score. */
+function useCountUp(target: number | null, ms = 1100) {
+  const [v, setV] = useState(0);
+  useEffect(() => {
+    if (target == null) return;
+    const start = performance.now();
+    let raf = 0;
+    const tick = (t: number) => {
+      const p = Math.min(1, (t - start) / ms);
+      setV(Math.round(target * (1 - Math.pow(1 - p, 3))));
+      if (p < 1) raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [target, ms]);
+  return v;
+}
+
+const ScoreRing: React.FC<{ score: number; tone: string }> = ({ score, tone }) => {
+  const shown = useCountUp(score);
+  const r = 70;
+  const c = 2 * Math.PI * r;
+  return (
+    <svg
+      width="176"
+      height="176"
+      viewBox="0 0 176 176"
+      role="img"
+      aria-label={`Credibility ${score} out of 100`}
+    >
+      <circle cx="88" cy="88" r={r} fill="none" stroke="rgba(236,230,217,0.08)" strokeWidth="2" />
+      {Array.from({ length: 40 }).map((_, i) => {
+        const a = (i / 40) * Math.PI * 2 - Math.PI / 2;
+        return (
+          <line
+            key={i}
+            x1={88 + Math.cos(a) * 80}
+            y1={88 + Math.sin(a) * 80}
+            x2={88 + Math.cos(a) * (i % 10 === 0 ? 74 : 77)}
+            y2={88 + Math.sin(a) * (i % 10 === 0 ? 74 : 77)}
+            stroke="rgba(236,230,217,0.18)"
+          />
+        );
+      })}
+      <circle
+        cx="88"
+        cy="88"
+        r={r}
+        fill="none"
+        stroke={tone}
+        strokeWidth="2.5"
+        strokeLinecap="round"
+        strokeDasharray={`${(score / 100) * c} ${c}`}
+        transform="rotate(-90 88 88)"
+        className="animate-draw"
+        style={{ ['--len' as string]: c }}
+      />
+      <text
+        x="88"
+        y="96"
+        textAnchor="middle"
+        fill="#ECE6D9"
+        fontSize="54"
+        fontFamily="'Bodoni Moda', serif"
+      >
+        {shown}
+      </text>
+      <text
+        x="88"
+        y="120"
+        textAnchor="middle"
+        fill="#7C776E"
+        fontSize="10"
+        letterSpacing="3"
+        fontFamily="'Instrument Sans'"
+      >
+        OUT OF 100
+      </text>
+    </svg>
+  );
+};
+
+/** How the score was built: one bar split by each component's share, and its table twin. */
+const Breakdown: React.FC<{ parts: ScoreComponent[] }> = ({ parts }) => {
+  const used = parts.filter((p) => p.score !== null && p.share > 0);
+  return (
+    <section className="panel p-7">
+      <div className="mb-5 flex items-baseline justify-between">
+        <h3 className="font-display text-[22px] text-slate-100">How this score was built</h3>
+        <p className="file-no">weighted mean of the parts below</p>
+      </div>
+      <div className="flex h-3 w-full overflow-hidden rounded-full bg-slate-900" aria-hidden="true">
+        {used.map((p, i) => (
+          <div
+            key={p.key}
+            className="h-full animate-rise"
+            style={{
+              width: `${p.share * 100}%`,
+              background: COMPONENT_TONE[p.key] ?? '#5B5852',
+              marginLeft: i ? 2 : 0,
+              animationDelay: `${i * 90}ms`,
+            }}
+          />
+        ))}
+      </div>
+      <table className="mt-6 w-full text-left text-[14px]">
+        <thead>
+          <tr className="label-caps">
+            <th className="pb-3 font-semibold">Component</th>
+            <th className="pb-3 text-right font-semibold">Score</th>
+            <th className="pb-3 text-right font-semibold">Weight</th>
+            <th className="pb-3 pl-6 font-semibold">Why</th>
+          </tr>
+        </thead>
+        <tbody>
+          {parts.map((p) => (
+            <tr key={p.key} className="border-t border-slate-900 align-top">
+              <td className="py-3 pr-4 text-slate-200">
+                <span
+                  className="mr-2.5 inline-block h-2.5 w-2.5 rounded-sm align-middle"
+                  style={{ background: COMPONENT_TONE[p.key] ?? '#5B5852' }}
+                />
+                {p.label}
+              </td>
+              <td className="py-3 text-right font-mono text-slate-200">
+                {p.score === null ? '—' : Math.round(p.score)}
+              </td>
+              <td className="py-3 text-right font-mono text-slate-400">
+                {Math.round(p.share * 100)}%
+              </td>
+              <td className="py-3 pl-6 text-[13px] leading-relaxed text-slate-400">{p.detail}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </section>
+  );
+};
+
+/** Support against refutation for one claim, as a diverging bar around "no evidence". */
+const Balance: React.FC<{ claim: CheckedClaim }> = ({ claim }) => {
+  const total = claim.support + claim.refute;
+  const s = total ? claim.support / total : 0;
+  const r = total ? claim.refute / total : 0;
+  return (
+    <div
+      className="flex items-center gap-3"
+      aria-label={`Support ${claim.support.toFixed(2)}, refute ${claim.refute.toFixed(2)}`}
+    >
+      <span className="file-no w-14 text-right" style={{ color: STANCE.contradict.tone }}>
+        ✕ {claim.refute.toFixed(2)}
+      </span>
+      <div className="relative flex h-1.5 flex-1 overflow-hidden rounded-full bg-slate-900">
+        <div className="flex w-1/2 justify-end">
+          <div
+            className="h-full rounded-l-full"
+            style={{ width: `${r * 100}%`, background: STANCE.contradict.tone }}
+          />
+        </div>
+        <div className="absolute left-1/2 top-[-3px] h-[12px] w-px bg-slate-600" />
+        <div className="w-1/2">
+          <div
+            className="h-full rounded-r-full"
+            style={{ width: `${s * 100}%`, background: STANCE.entail.tone }}
+          />
+        </div>
+      </div>
+      <span className="file-no w-14" style={{ color: STANCE.entail.tone }}>
+        {claim.support.toFixed(2)} ✓
+      </span>
+    </div>
+  );
+};
+
+const likelihood = (c: CheckedClaim) => {
+  if (c.certainty < 0.08) return { word: 'No evidence found', tone: '#7C776E' };
+  const p = c.probability;
+  if (p >= 0.7) return { word: `Likely true · ${Math.round(p * 100)}%`, tone: STANCE.entail.tone };
+  if (p <= 0.3)
+    return { word: `Likely false · ${Math.round(p * 100)}%`, tone: STANCE.contradict.tone };
+  return { word: `Unsettled · ${Math.round(p * 100)}%`, tone: '#C9A45C' };
+};
+
+const host = (u: string | null) => {
+  try {
+    return u ? new URL(u).hostname.replace(/^www\./, '') : '';
+  } catch {
+    return '';
+  }
+};
+
+const ClaimCard: React.FC<{
+  claim: CheckedClaim;
+  index: number;
+  onExplore: (t: string) => void;
+}> = ({ claim, index, onExplore }) => {
+  const l = likelihood(claim);
+  const passages = [...claim.evidence].sort(
+    (a, b) => Number(a.stance === 'neutral') - Number(b.stance === 'neutral'),
+  );
+  return (
+    <article className="panel animate-rise p-7" style={{ animationDelay: `${index * 120}ms` }}>
+      <div className="flex items-start justify-between gap-6">
+        <div>
+          <p className="file-no mb-2">CLAIM {String(index + 1).padStart(2, '0')}</p>
+          <h4 className="font-display text-[24px] leading-snug text-slate-100">{claim.text}</h4>
+        </div>
+        <span
+          className="shrink-0 rounded-full border px-3 py-1 text-[12px] font-medium"
+          style={{ borderColor: `${l.tone}55`, color: l.tone }}
+        >
+          {l.word}
+        </span>
+      </div>
+
+      <div className="mt-5">
+        <Balance claim={claim} />
+      </div>
+
+      {claim.finding && (
+        <div className="mt-6 border-l border-brass-700 pl-5">
+          <p className="label-caps mb-2">What the sources say</p>
+          <p className="text-[15px] leading-relaxed text-slate-200">{claim.finding}</p>
+        </div>
+      )}
+
+      {claim.topics && claim.topics.length > 0 && (
+        <div className="mt-6 grid gap-3 sm:grid-cols-3">
+          {claim.topics.map((t) => (
+            <a
+              key={t.title}
+              href={t.url ?? '#'}
+              target="_blank"
+              rel="noreferrer"
+              className="group overflow-hidden rounded-xl border border-slate-800 bg-[#101013] transition-colors hover:border-brass-700"
+            >
+              {t.image ? (
+                <img
+                  src={t.image}
+                  alt=""
+                  loading="lazy"
+                  className="h-28 w-full object-cover opacity-85 transition-opacity group-hover:opacity-100"
+                />
+              ) : (
+                <div className="h-28 w-full bg-slate-900" />
+              )}
+              <div className="p-3">
+                <p className="flex items-center justify-between text-[13px] font-medium text-slate-200">
+                  {t.title}{' '}
+                  <ArrowUpRight className="h-3.5 w-3.5 text-slate-600 group-hover:text-brass-300" />
+                </p>
+                <p className="mt-1 line-clamp-2 text-[12px] leading-snug text-slate-500">
+                  {t.summary}
+                </p>
+              </div>
+            </a>
+          ))}
+        </div>
+      )}
+
+      {passages.length > 0 && (
+        <div className="mt-6">
+          <p className="label-caps mb-3">Evidence · {passages.length} passages</p>
+          <ul className="divide-y divide-slate-900">
+            {passages.map((e, i) => {
+              const st = STANCE[e.stance] ?? STANCE.neutral;
+              return (
+                <li key={i} className="grid grid-cols-[88px_1fr_auto] gap-4 py-3">
+                  <span className="text-[12px] font-medium" style={{ color: st.tone }}>
+                    {st.glyph} {st.word}
+                  </span>
+                  <div className="min-w-0">
+                    <a
+                      href={e.url ?? '#'}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-[13px] text-slate-300 underline decoration-slate-700 underline-offset-4 hover:text-brass-200 hover:decoration-brass-700"
+                    >
+                      {e.domain || host(e.url)}
+                    </a>
+                    <p className="mt-1 line-clamp-2 text-[13px] leading-relaxed text-slate-500">
+                      “{e.snippet}”
+                    </p>
+                  </div>
+                  <span
+                    className="file-no whitespace-nowrap"
+                    title="How much this source is trusted"
+                  >
+                    trust {Math.round(e.reliability * 100)}
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
+
+      {claim.explore && claim.explore.length > 0 && (
+        <div className="mt-6 flex flex-wrap items-center gap-2">
+          <span className="label-caps mr-1">Look into</span>
+          {claim.explore.map((x) => (
+            <button
+              key={x}
+              onClick={() => onExplore(x)}
+              className="rounded-full border border-slate-800 px-3 py-1 text-[12px] text-slate-300 transition-colors hover:border-brass-600 hover:text-brass-200"
+            >
+              {x}
+            </button>
+          ))}
+        </div>
+      )}
+    </article>
+  );
+};
 
 export const NewsScanner: React.FC = () => {
   const [text, setText] = useState('');
   const [loading, setLoading] = useState(false);
-  const [loadingStep, setLoadingStep] = useState(0);
+  const [step, setStep] = useState(0);
   const [result, setResult] = useState<NewsAnalysisResult | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [showShareOptions, setShowShareOptions] = useState(false);
   const { addToHistory } = useAuth();
-
-  // Pipeline stages. These now correspond to real backend steps:
-  // claim extraction -> hybrid retrieval -> rerank -> NLI stance -> aggregate.
-  const loadingLogs = [
-    'Initializing forensic credibility sweep...',
-    'Decrypting target payload structure...',
-    'Retrieving evidence from corpus...',
-    'Scoring entailment against retrieved evidence...',
-    'Resolving cross-reference authenticity weights...',
-    'Vault verification clearance established.',
-  ];
+  const resultRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    let interval: any;
-    if (loading) {
-      setLoadingStep(0);
-      playCyberSFX('scan');
-      interval = setInterval(() => {
-        setLoadingStep((prev) => {
-          if (prev < loadingLogs.length - 1) {
-            playCyberSFX('hover');
-            return prev + 1;
-          }
-          return prev;
-        });
-      }, 900);
-    } else {
-      setLoadingStep(0);
-    }
-    return () => clearInterval(interval);
+    if (!loading) return;
+    setStep(0);
+    const t = setInterval(() => setStep((s) => Math.min(s + 1, STEPS.length - 1)), 2600);
+    return () => clearInterval(t);
   }, [loading]);
 
-  const handleAnalyze = async () => {
-    if (!text.trim()) return;
+  const run = async (input: string, depth: 'standard' | 'deep' = 'standard') => {
+    if (!input.trim()) return;
     setLoading(true);
-    setResult(null);
     setError(null);
-    setShowShareOptions(false);
-
+    if (depth === 'standard') setResult(null);
+    playCyberSFX('scan');
     try {
-      const data = await analyzeNewsText(text);
+      const data = await analyzeNewsText(input, depth);
       setResult(data);
       playCyberSFX('success');
-
-      // Save to user history
       addToHistory({
-        id: Math.random().toString(36).substr(2, 9),
+        id: Math.random().toString(36).slice(2, 11),
         date: new Date().toISOString(),
         type: 'NEWS',
-        summary: data.summary.substring(0, 80) + '...',
-        result: `${data.credibilityScore}% Credible`,
+        summary: data.summary.substring(0, 80) + '…',
+        result: `${data.credibilityScore}% · ${data.verdict}`,
       });
+      setTimeout(
+        () => resultRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }),
+        80,
+      );
     } catch (e: any) {
-      console.error(e);
       playCyberSFX('alarm');
-      setError(e.message || 'Threat validation core error. Please check system configurations.');
+      setError(e?.message || 'The analysis did not complete. Try again in a moment.');
     } finally {
       setLoading(false);
     }
   };
 
-  const handleExportPDF = () => {
+  const explore = (topic: string) => {
+    setText(topic);
+    run(topic, 'deep');
+  };
+
+  const exportPDF = () => {
     if (!result) return;
-    playCyberSFX('click');
     const doc = new jsPDF();
-    const margin = 20;
-    const pageWidth = doc.internal.pageSize.getWidth();
-    const maxLineWidth = pageWidth - margin * 2;
-
-    // Header
-    doc.setFontSize(22);
-    doc.setTextColor(41, 128, 185); // Blue
-    doc.text('CEREBRO', margin, 20);
-
-    doc.setFontSize(12);
-    doc.setTextColor(100);
-    doc.text('News Credibility Analysis Report', margin, 28);
-    doc.text(`Date: ${new Date().toLocaleString()}`, margin, 35);
-
-    doc.setDrawColor(200);
-    doc.line(margin, 40, pageWidth - margin, 40);
-
-    // Results
-    let y = 55;
-
-    doc.setFontSize(14);
-    doc.setTextColor(0);
-    doc.text(`Verdict: ${result.verdict.toUpperCase()}`, margin, y);
-
-    doc.setFontSize(12);
-    doc.text(`Credibility Score: ${result.credibilityScore}%`, margin + 100, y);
-    y += 15;
-
-    // Summary
-    doc.setFontSize(12);
-    doc.setFont('helvetica', 'bold');
-    doc.text('Summary', margin, y);
-    y += 7;
-    doc.setFont('helvetica', 'normal');
-    doc.setFontSize(10);
-    const summaryLines = doc.splitTextToSize(result.summary, maxLineWidth);
-    doc.text(summaryLines, margin, y);
-    y += summaryLines.length * 5 + 10;
-
-    // Reasoning
-    doc.setFontSize(12);
-    doc.setFont('helvetica', 'bold');
-    doc.text('AI Reasoning', margin, y);
-    y += 7;
-    doc.setFont('helvetica', 'normal');
-    doc.setFontSize(10);
-    const reasoningLines = doc.splitTextToSize(result.reasoning, maxLineWidth);
-    doc.text(reasoningLines, margin, y);
-    y += reasoningLines.length * 5 + 10;
-
-    // Sources
-    if (result.sources.length > 0) {
-      doc.setFontSize(12);
-      doc.setFont('helvetica', 'bold');
-      doc.text('Sources / References', margin, y);
-      y += 7;
-      doc.setFont('helvetica', 'normal');
-      doc.setFontSize(10);
-      result.sources.forEach((source) => {
-        const sourceLine = doc.splitTextToSize(`- ${source}`, maxLineWidth);
-        doc.text(sourceLine, margin, y);
-        y += sourceLine.length * 5 + 2;
+    const m = 20;
+    const w = doc.internal.pageSize.getWidth() - m * 2;
+    let y = 22;
+    const line = (s: string, size = 10, bold = false, gap = 5) => {
+      doc.setFont('times', bold ? 'bold' : 'normal');
+      doc.setFontSize(size);
+      const lines = doc.splitTextToSize(s, w);
+      lines.forEach((l: string) => {
+        if (y > 280) {
+          doc.addPage();
+          y = 20;
+        }
+        doc.text(l, m, y);
+        y += gap;
       });
-    }
-
-    // Footer
-    doc.setFontSize(8);
-    doc.setTextColor(150);
-    doc.text('Generated by CEREBRO - Threat Intelligence System', margin, pageWidth * 1.3); // Approximate bottom
-
-    doc.save(`cerebro-news-analysis-${Date.now()}.pdf`);
-  };
-
-  const handleShare = (platform: 'twitter' | 'facebook') => {
-    if (!result) return;
-    playCyberSFX('click');
-    const shareText = `CEREBRO Analysis: ${result.verdict.toUpperCase()} (${result.credibilityScore}% Credibility).\n\nSummary: ${result.summary}`;
-    const url = window.location.href;
-
-    let shareUrl = '';
-    if (platform === 'twitter') {
-      shareUrl = `https://twitter.com/intent/tweet?text=${encodeURIComponent(shareText)}`;
-    } else {
-      shareUrl = `https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(url)}&quote=${encodeURIComponent(shareText)}`;
-    }
-
-    window.open(shareUrl, '_blank', 'width=600,height=400');
-    setShowShareOptions(false);
-  };
-
-  const getScoreColor = (score: number) => {
-    if (score >= 80) return 'text-emerald-400 border-emerald-500/30 bg-emerald-500/5';
-    if (score >= 50) return 'text-yellow-400 border-yellow-500/30 bg-yellow-500/5';
-    return 'text-red-400 border-red-500/30 bg-red-500/5';
-  };
-
-  const getScoreVerdictStyle = (score: number) => {
-    if (score >= 80) {
-      return {
-        label: 'VERIFIED CREDIBLE',
-        desc: 'This item aligns securely with validated cross-references and carries a low probability of intentional disinformation.',
-        icon: <CheckCircle2 className="w-8 h-8 text-emerald-400" />,
-      };
-    }
-    if (score >= 50) {
-      return {
-        label: 'SUSPICIOUS / UNVERIFIED',
-        desc: 'This item exhibits minor factual irregularities or lacks corroboration in certified security databases. Approach with caution.',
-        icon: <AlertTriangle className="w-8 h-8 text-yellow-400 animate-pulse" />,
-      };
-    }
-    return {
-      label: 'MALICIOUS PROPAGANDA / FAKE',
-      desc: 'Critical mismatch. This item is heavily flagged as host-level disinformation or factually compromised media.',
-      icon: <AlertOctagon className="w-8 h-8 text-red-500 animate-bounce" />,
     };
+    line('CEREBRO — Verification report', 18, true, 9);
+    line(new Date().toLocaleString(), 9, false, 8);
+    line(
+      `Verdict: ${result.verdict} · ${result.credibilityScore}/100 · confidence ${result.confidence_label ?? '—'}`,
+      12,
+      true,
+      8,
+    );
+    line(`Text examined: ${result.summary}`);
+    y += 3;
+    (result.breakdown ?? []).forEach((p) =>
+      line(
+        `${p.label}: ${p.score === null ? '—' : Math.round(p.score)} (weight ${Math.round(p.share * 100)}%) — ${p.detail}`,
+      ),
+    );
+    y += 3;
+    (result.claims ?? []).forEach((c, i) => {
+      line(`Claim ${i + 1}: ${c.text}`, 11, true, 6);
+      if (c.finding) line(c.finding);
+      c.evidence.forEach((e) =>
+        line(
+          `  [${STANCE[e.stance]?.word ?? e.stance}] ${e.domain ?? ''}: “${e.snippet}” ${e.url ?? ''}`,
+          9,
+          false,
+          4.5,
+        ),
+      );
+      y += 3;
+    });
+    line('Reasoning', 11, true, 6);
+    line(result.reasoning);
+    doc.save(`cerebro-verification-${Date.now()}.pdf`);
   };
+
+  const share = () => {
+    if (!result) return;
+    const shareText = `CEREBRO: ${result.verdict} (${result.credibilityScore}/100) — ${result.summary}`;
+    if (navigator.share) navigator.share({ text: shareText }).catch(() => undefined);
+    else navigator.clipboard?.writeText(shareText);
+  };
+
+  const v = result ? verdictOf(result.verdict) : null;
 
   return (
-    <div className="max-w-4xl mx-auto space-y-6">
-      {/* 1. Introductory Title */}
-      <div className="flex items-center gap-4 bg-slate-900/30 border border-slate-900 p-5 rounded-xl backdrop-blur-md relative overflow-hidden">
-        <div className="absolute top-0 left-0 w-full h-[1px] bg-gradient-to-r from-transparent via-blue-500/20 to-transparent" />
-        <div className="p-3 rounded-lg bg-blue-950/40 border border-blue-500/25 text-blue-400">
-          <Newspaper className="w-6 h-6 animate-pulse" />
-        </div>
-        <div className="space-y-0.5">
-          <h2 className="text-lg font-bold text-white font-mono tracking-wider">
-            [ NEWS INTEL RECON MODULE ]
-          </h2>
-          <p className="text-xs text-slate-500 font-mono">
-            Verify text files, articles, headlines, or telemetry statements against the retrieved
-            evidence corpus.
-          </p>
-        </div>
-      </div>
-
-      {/* 2. Interactive Input Panel */}
-      <div className="bg-slate-950/70 border border-slate-900 p-6 rounded-xl relative overflow-hidden shadow-2xl backdrop-blur-md">
-        <div className="absolute top-2 right-3 text-[8px] font-mono text-slate-700 tracking-widest uppercase">
-          SECURE_NLP_GATE_v2.0
-        </div>
-
+    <div className="space-y-8">
+      {/* Input */}
+      <section className="panel p-7">
+        <label htmlFor="claim-input" className="label-caps mb-3 block">
+          What did you read?
+        </label>
         <textarea
-          className="w-full h-44 bg-slate-950 border border-slate-900 focus:border-slate-800 focus:ring-1 focus:ring-slate-800 rounded-lg p-4 text-slate-300 font-mono text-xs outline-none transition-all resize-none custom-scrollbar"
-          placeholder="Paste article text, coordinates, logs, or tactical message headlines here for deep NLP verification..."
+          id="claim-input"
           value={text}
           onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) run(text);
+          }}
+          rows={5}
+          placeholder="A headline, a paragraph from Reddit, or several questions at once. Spelling does not need to be perfect."
+          className="w-full resize-y rounded-xl border border-slate-800 bg-[#101013] px-5 py-4 text-[16px] leading-relaxed text-slate-100 outline-none transition-colors placeholder:text-slate-600 focus:border-brass-600"
         />
-
-        <div className="mt-4 flex items-center justify-between">
-          <div className="text-[10px] font-mono text-slate-600 uppercase">
-            [ Payload size: {text.length} characters ]
+        <div className="mt-4 flex flex-wrap items-center justify-between gap-4">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="label-caps mr-1">Try</span>
+            {EXAMPLES.map((x) => (
+              <button
+                key={x}
+                onClick={() => setText(x)}
+                className="max-w-[260px] truncate rounded-full border border-slate-800 px-3 py-1 text-[12px] text-slate-400 transition-colors hover:border-slate-600 hover:text-slate-200"
+              >
+                {x}
+              </button>
+            ))}
           </div>
-
           <button
-            onClick={handleAnalyze}
-            onMouseEnter={() => playCyberSFX('hover')}
+            onClick={() => run(text)}
             disabled={loading || !text.trim()}
-            className={`px-5 py-2.5 rounded-lg text-xs font-bold font-mono tracking-widest uppercase flex items-center gap-2 border cursor-pointer transition-all ${
-              loading || !text.trim()
-                ? 'bg-slate-900 border-slate-800 text-slate-600 cursor-not-allowed'
-                : 'bg-blue-600/10 border-blue-500/30 text-blue-400 hover:bg-blue-500/20 hover:border-blue-400 hover:shadow-[0_0_15px_rgba(59,130,246,0.15)]'
-            }`}
+            className="flex items-center gap-2 rounded-lg bg-brass-400 px-6 py-3 text-[14px] font-semibold text-[#16120A] transition-colors hover:bg-brass-300 disabled:opacity-40"
           >
-            {loading ? (
-              <>
-                <RefreshCw className="h-3.5 w-3.5 animate-spin text-blue-400" />
-                VERIFYING...
-              </>
-            ) : (
-              'VERIFY_PAYLOAD'
-            )}
+            <Search className="h-4 w-4" strokeWidth={2} /> Verify
           </button>
         </div>
-      </div>
+      </section>
 
-      {/* 2.5. Error Panel */}
-      <AnimatePresence>
-        {error && (
-          <motion.div
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -10 }}
-            className="p-5 bg-red-500/10 border border-red-500/20 rounded-xl text-red-400 font-mono text-xs flex flex-col gap-3"
-          >
-            <div className="flex items-center gap-2 font-bold text-red-500">
-              <AlertTriangle className="w-5 h-5 animate-pulse" />
-              <span>[ RECON SYSTEM FAULT ]</span>
-            </div>
-            <p className="text-slate-300">
-              {error.includes('leaked') || error.includes('403') ? (
-                <>
-                  <span className="text-red-400 font-bold block mb-1">
-                    API KEY DISRUPTED (LEAK STATE REPORTED):
-                  </span>
-                  Your server-side Gemini API key has been reported as leaked. To restore the
-                  intelligence core, please navigate to the{' '}
-                  <span className="text-blue-400 underline font-bold">Settings &gt; Secrets</span>{' '}
-                  menu in AI Studio, update your API key signature, and retry validation.
-                </>
-              ) : (
-                error
-              )}
-            </p>
-            <button
-              onClick={handleAnalyze}
-              className="mt-1 self-start px-4 py-2 bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 text-red-400 rounded-lg font-bold text-[10px] tracking-widest uppercase transition-colors cursor-pointer"
-            >
-              RETRY_VERIFICATION
-            </button>
-          </motion.div>
-        )}
-      </AnimatePresence>
+      {/* Progress: honest stage names, no fake log lines */}
+      {loading && (
+        <section className="panel flex items-center gap-8 p-7" aria-live="polite">
+          <svg width="56" height="56" viewBox="0 0 56 56" aria-hidden="true">
+            <circle cx="28" cy="28" r="26" fill="none" stroke="rgba(236,230,217,0.1)" />
+            <circle
+              cx="28"
+              cy="28"
+              r="26"
+              fill="none"
+              stroke="#C9A45C"
+              strokeWidth="1.5"
+              strokeDasharray="30 134"
+              className="animate-sweep"
+              style={{ transformOrigin: '28px 28px' }}
+            />
+          </svg>
+          <ol className="flex flex-1 flex-wrap gap-x-6 gap-y-2">
+            {STEPS.map((s, i) => (
+              <li
+                key={s}
+                className={`text-[13px] transition-colors ${
+                  i < step ? 'text-slate-500' : i === step ? 'text-slate-100' : 'text-slate-700'
+                }`}
+              >
+                <span className="file-no mr-2">{String(i + 1).padStart(2, '0')}</span>
+                {s}
+                {i === step && <span className="animate-breathe">…</span>}
+              </li>
+            ))}
+          </ol>
+        </section>
+      )}
 
-      {/* 3. Immersive holographic hacker terminal loading overlay */}
-      <AnimatePresence>
-        {loading && (
-          <motion.div
-            initial={{ opacity: 0, scale: 0.98 }}
-            animate={{ opacity: 1, scale: 1 }}
-            exit={{ opacity: 0 }}
-            className="bg-slate-950/90 border border-slate-900 p-6 rounded-xl shadow-2xl backdrop-blur-md relative overflow-hidden"
-          >
-            {/* Pulsing grid lines */}
-            <div className="absolute inset-0 bg-grid-lines opacity-10 pointer-events-none" />
-            <div className="absolute top-0 left-0 w-full h-[2px] bg-emerald-500/40 animate-scanline" />
+      {error && (
+        <p
+          role="alert"
+          className="rounded-xl border border-signal-800 bg-signal-950/40 px-5 py-4 text-[14px] text-signal-200"
+        >
+          {error}
+        </p>
+      )}
 
-            <div className="flex flex-col md:flex-row items-center gap-6 relative z-10">
-              {/* Rotating holographic scanner radar */}
-              <div className="relative w-28 h-28 flex items-center justify-center flex-shrink-0">
-                <div className="absolute inset-0 border border-dashed border-emerald-500/20 rounded-full animate-spin [animation-duration:12s]" />
-                <div className="absolute inset-3 border border-dotted border-emerald-500/30 rounded-full animate-spin [animation-duration:5s] [animation-direction:reverse]" />
-                <div className="absolute inset-6 border border-emerald-500/40 rounded-full animate-pulse" />
-                <Terminal className="w-7 h-7 text-emerald-400 animate-pulse" />
-              </div>
-
-              {/* Dynamic scrolling diagnostic logs */}
-              <div className="flex-1 space-y-2 font-mono text-[10px] w-full">
-                <div className="flex justify-between items-center text-slate-500 border-b border-slate-900 pb-1.5 mb-2">
-                  <span>LOGGING NODE STACKS</span>
-                  <span className="text-emerald-400 animate-pulse">● SECURE_STREAM_LIVE</span>
-                </div>
-
-                <div className="space-y-1.5 h-20 overflow-hidden">
-                  {loadingLogs.slice(0, loadingStep + 1).map((log, i) => (
-                    <motion.div
-                      key={i}
-                      initial={{ opacity: 0, x: -10 }}
-                      animate={{ opacity: 1, x: 0 }}
-                      className={`flex items-center gap-2 ${i === loadingStep ? 'text-emerald-400 font-bold' : 'text-slate-600'}`}
-                    >
-                      <span className="text-slate-800">&gt;</span>
-                      <span className="truncate">{log}</span>
-                    </motion.div>
-                  ))}
-                </div>
-
-                {/* Progress bar container */}
-                <div className="mt-3 space-y-1">
-                  <div className="flex justify-between text-[8px] text-slate-500 font-bold">
-                    <span>SECTOR_DECRYPTION</span>
-                    <span>{Math.round(((loadingStep + 1) / loadingLogs.length) * 100)}%</span>
-                  </div>
-                  <div className="h-1.5 bg-slate-900 rounded overflow-hidden border border-slate-800">
-                    <motion.div
-                      className="h-full bg-emerald-500"
-                      initial={{ width: '0%' }}
-                      animate={{ width: `${((loadingStep + 1) / loadingLogs.length) * 100}%` }}
-                      transition={{ duration: 0.3 }}
-                    />
-                  </div>
-                </div>
-              </div>
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      {/* 4. Results Section */}
-      <AnimatePresence>
-        {result && (
-          <motion.div
-            initial={{ opacity: 0, y: 15 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -15 }}
-            className={`bg-slate-950/80 border border-slate-900 rounded-xl overflow-hidden shadow-2xl backdrop-blur-md relative`}
-          >
-            {/* Background cyber accent plate */}
-            <div className="absolute top-0 left-0 w-full h-[2px] bg-gradient-to-r from-transparent via-blue-500 to-transparent" />
-
-            {/* Header / Verdict Actions */}
-            <div className="p-5 border-b border-slate-900/60 bg-slate-950/40 flex flex-col sm:flex-row justify-between items-center gap-4">
-              <div className="flex items-center gap-2 font-mono">
-                <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">
-                  VERDICT_CODE:
+      {result && v && (
+        <div ref={resultRef} className="space-y-8">
+          {/* Verdict */}
+          <section className="panel grid items-center gap-8 p-8 md:grid-cols-[176px_1fr]">
+            <ScoreRing score={result.credibilityScore} tone={v.tone} />
+            <div>
+              <p className="label-caps mb-3">Verdict</p>
+              <p className="font-display text-[46px] leading-none" style={{ color: v.tone }}>
+                <span className="mr-3 text-[30px] align-middle">{v.glyph}</span>
+                {result.verdict}
+              </p>
+              <p className="mt-3 text-[16px] text-slate-300">{v.line}</p>
+              <div className="mt-5 flex flex-wrap items-center gap-x-6 gap-y-2 text-[13px] text-slate-400">
+                <span>
+                  Confidence{' '}
+                  <span className="text-slate-100">{result.confidence_label ?? '—'}</span>
                 </span>
-                <span
-                  className={`px-2.5 py-0.5 rounded text-[10px] font-bold border ${getScoreColor(result.credibilityScore)}`}
-                >
-                  {result.verdict.toUpperCase()}
+                <span>
+                  Claims checked{' '}
+                  <span className="text-slate-100">{result.claims?.length ?? '—'}</span>
+                </span>
+                <span>
+                  Sources <span className="text-slate-100">{result.sources.length}</span>
                 </span>
               </div>
-
-              <div className="flex items-center gap-2.5 font-mono">
-                {/* Share Dropdown */}
-                <div className="relative">
-                  <button
-                    onClick={() => {
-                      playCyberSFX('click');
-                      setShowShareOptions(!showShareOptions);
-                    }}
-                    className="p-1.5 bg-slate-950 border border-slate-900 rounded text-slate-500 hover:text-white hover:border-slate-700 text-[10px] font-bold flex items-center gap-1.5 cursor-pointer"
-                  >
-                    <Share2 className="w-3.5 h-3.5" />
-                    SHARE
-                  </button>
-                  {showShareOptions && (
-                    <div className="absolute top-full right-0 mt-2 w-36 bg-slate-950 border border-slate-900 rounded-lg shadow-2xl z-20 overflow-hidden">
-                      <button
-                        onClick={() => handleShare('twitter')}
-                        className="w-full text-left px-3.5 py-2.5 text-[10px] text-slate-400 hover:bg-slate-900 hover:text-white transition-colors flex items-center gap-2 border-b border-slate-900 font-bold"
-                      >
-                        <svg
-                          className="w-3 h-3 text-blue-400"
-                          fill="currentColor"
-                          viewBox="0 0 24 24"
-                        >
-                          <path d="M23.953 4.57a10 10 0 01-2.825.775 4.958 4.958 0 002.163-2.723c-.951.555-2.005.959-3.127 1.184a4.92 4.92 0 00-8.384 4.482C7.69 8.095 4.067 6.13 1.64 3.162a4.822 4.822 0 00-.666 2.475c0 1.71.87 3.213 2.188 4.096a4.904 4.904 0 01-2.228-.616v.06a4.923 4.923 0 003.946 4.827 4.996 4.996 0 01-2.212.085 4.936 4.936 0 004.604 3.417 9.867 9.867 0 01-6.102 2.105c-.39 0-.779-.023-1.17-.067a13.995 13.995 0 007.557 2.209c9.053 0 13.998-7.496 13.998-13.985 0-.21 0-.42-.015-.63A9.935 9.935 0 0024 4.59z" />
-                        </svg>
-                        Twitter
-                      </button>
-                      <button
-                        onClick={() => handleShare('facebook')}
-                        className="w-full text-left px-3.5 py-2.5 text-[10px] text-slate-400 hover:bg-slate-900 hover:text-white transition-colors flex items-center gap-2 font-bold"
-                      >
-                        <svg
-                          className="w-3 h-3 text-blue-600"
-                          fill="currentColor"
-                          viewBox="0 0 24 24"
-                        >
-                          <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.791-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z" />
-                        </svg>
-                        Facebook
-                      </button>
-                    </div>
-                  )}
-                </div>
-
-                {/* PDF Export Button */}
+              <div className="mt-6 flex flex-wrap gap-3">
                 <button
-                  onClick={handleExportPDF}
-                  className="p-1.5 bg-slate-950 border border-slate-900 rounded text-slate-500 hover:text-white hover:border-slate-700 text-[10px] font-bold flex items-center gap-1.5 cursor-pointer"
-                  title="Export forensic PDF payload"
+                  onClick={() => run(text || result.summary, 'deep')}
+                  disabled={loading}
+                  className="flex items-center gap-2 rounded-lg border border-brass-700 px-4 py-2 text-[13px] text-brass-200 transition-colors hover:bg-brass-950 disabled:opacity-40"
                 >
-                  <Download className="w-3.5 h-3.5" />
-                  PDF_REPORT
+                  <Telescope className="h-4 w-4" strokeWidth={1.6} />
+                  {result.depth === 'deep' ? 'Search again, deeper' : 'Dig deeper'}
+                </button>
+                <button
+                  onClick={exportPDF}
+                  className="flex items-center gap-2 rounded-lg border border-slate-800 px-4 py-2 text-[13px] text-slate-300 transition-colors hover:border-slate-600"
+                >
+                  <Download className="h-4 w-4" strokeWidth={1.6} /> Report (PDF)
+                </button>
+                <button
+                  onClick={share}
+                  className="flex items-center gap-2 rounded-lg border border-slate-800 px-4 py-2 text-[13px] text-slate-300 transition-colors hover:border-slate-600"
+                >
+                  <Share2 className="h-4 w-4" strokeWidth={1.6} /> Share
                 </button>
               </div>
             </div>
+          </section>
 
-            {/* Forensic details grid */}
-            <div className="p-6 grid grid-cols-1 md:grid-cols-3 gap-8">
-              {/* Radial Score Gauge */}
-              <div className="md:col-span-1 flex flex-col items-center justify-center p-6 bg-slate-950/40 border border-slate-900 rounded-lg">
-                <div className="relative w-36 h-36 flex items-center justify-center">
-                  {/* Holographic glowing rings */}
-                  <div className="absolute inset-0 border border-dashed border-slate-800 rounded-full animate-spin [animation-duration:24s]" />
+          {result.breakdown && result.breakdown.length > 0 && (
+            <Breakdown parts={result.breakdown} />
+          )}
 
-                  <svg className="w-full h-full transform -rotate-90" viewBox="0 0 36 36">
-                    <circle
-                      cx="18"
-                      cy="18"
-                      r="15.915"
-                      fill="none"
-                      stroke="#111827"
-                      strokeWidth="2.5"
-                    />
-                    <motion.circle
-                      cx="18"
-                      cy="18"
-                      r="15.915"
-                      fill="none"
-                      stroke={
-                        result.credibilityScore >= 80
-                          ? '#10b981'
-                          : result.credibilityScore >= 50
-                            ? '#f59e0b'
-                            : '#ef4444'
-                      }
-                      strokeWidth="2.5"
-                      strokeDasharray="100"
-                      initial={{ strokeDashoffset: 100 }}
-                      animate={{ strokeDashoffset: 100 - result.credibilityScore }}
-                      transition={{ duration: 1.2, ease: 'easeOut' }}
-                    />
-                  </svg>
+          {(result.claims ?? []).map((c, i) => (
+            <ClaimCard key={`${c.text}-${i}`} claim={c} index={i} onExplore={explore} />
+          ))}
 
-                  <div className="absolute flex flex-col items-center font-mono">
-                    <span className="text-3xl font-black text-white">
-                      {result.credibilityScore}%
-                    </span>
-                    <span className="text-[8px] text-slate-500 uppercase tracking-wider font-bold">
-                      Credibility
-                    </span>
-                  </div>
-                </div>
-              </div>
+          <section className="panel p-7">
+            <h3 className="mb-3 font-display text-[22px] text-slate-100">The reasoning</h3>
+            <p className="text-[15px] leading-relaxed text-slate-300">{result.reasoning}</p>
+            {result.evidence_sources && (
+              <p className="mt-5 file-no">
+                {Object.entries(result.evidence_sources)
+                  .map(([k, val]) => `${k.replace('_', ' ')}: ${val}`)
+                  .join('   ·   ')}
+              </p>
+            )}
+          </section>
 
-              {/* Analysis payload descriptions */}
-              <div className="md:col-span-2 space-y-4">
-                {/* Visual verdict description banner */}
-                <div className="p-4 bg-slate-950 border border-slate-900 rounded-lg flex items-start gap-4">
-                  <div className="flex-shrink-0 mt-0.5">
-                    {getScoreVerdictStyle(result.credibilityScore).icon}
-                  </div>
-                  <div className="space-y-1">
-                    <h4 className="text-xs font-extrabold text-white font-mono uppercase tracking-widest">
-                      [ {getScoreVerdictStyle(result.credibilityScore).label} ]
-                    </h4>
-                    <p className="text-[10px] text-slate-400 font-mono leading-relaxed">
-                      {getScoreVerdictStyle(result.credibilityScore).desc}
-                    </p>
-                  </div>
-                </div>
-
-                {/* Summary */}
-                <div className="font-mono">
-                  <h4 className="text-[10px] uppercase text-slate-500 font-black tracking-widest mb-1">
-                    Payload Summary
-                  </h4>
-                  <p className="text-xs text-slate-300 leading-relaxed bg-slate-950 p-3 rounded-lg border border-slate-900">
-                    {result.summary}
-                  </p>
-                </div>
-
-                {/* Reasoning */}
-                <div className="font-mono">
-                  <h4 className="text-[10px] uppercase text-slate-500 font-black tracking-widest mb-1">
-                    Core ML Reasoning
-                  </h4>
-                  <div className="text-xs text-slate-400 leading-relaxed border-l-2 border-blue-500 pl-4 py-1.5 bg-blue-950/10 rounded-r-lg">
-                    "{result.reasoning}"
-                  </div>
-                </div>
-
-                {/* Sources */}
-                {result.sources.length > 0 && (
-                  <div className="font-mono">
-                    <h4 className="text-[10px] uppercase text-slate-500 font-black tracking-widest mb-2">
-                      Linked Sources / Coordinates
-                    </h4>
-                    <ul className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs text-blue-400">
-                      {result.sources.map((source, i) => (
-                        <li key={i}>
-                          <a
-                            href={source}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="block bg-slate-950 border border-slate-900 p-2 rounded truncate hover:border-cyan-800 hover:text-cyan-300 transition-colors"
-                          >
-                            🔗 {source}
-                          </a>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-              </div>
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+          {result.related && result.related.length > 0 && (
+            <section className="panel p-7">
+              <h3 className="mb-4 font-display text-[22px] text-slate-100">More coverage</h3>
+              <ul className="grid gap-x-8 sm:grid-cols-2">
+                {result.related.map((r) => (
+                  <li key={r.url} className="border-t border-slate-900 py-3">
+                    <a
+                      href={r.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="group flex items-start justify-between gap-3 text-[14px] text-slate-300 hover:text-brass-200"
+                    >
+                      <span>
+                        {r.title || host(r.url)}
+                        <span className="mt-0.5 block file-no">
+                          {host(r.url)}
+                          {r.page_age ? ` · ${r.page_age}` : ''}
+                        </span>
+                      </span>
+                      <ArrowUpRight className="mt-1 h-3.5 w-3.5 shrink-0 text-slate-600 group-hover:text-brass-300" />
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
+        </div>
+      )}
     </div>
   );
 };
