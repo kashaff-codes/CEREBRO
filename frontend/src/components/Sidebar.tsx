@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { View } from '../types';
 import { useAuth } from '../context/AuthContext';
 import { playCyberSFX, toggleMute, getMuteStatus } from '../utils/audio';
-import { Shield, Volume2, VolumeX, Disc, Cpu, Activity, Radio } from 'lucide-react';
+import { Shield, Volume2, VolumeX, Radio } from 'lucide-react';
 import { motion } from 'motion/react';
 
 interface SidebarProps {

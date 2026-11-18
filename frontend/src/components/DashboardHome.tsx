@@ -23,7 +23,6 @@ import {
   Clock,
   ChevronDown,
   ChevronUp,
-  Filter,
   RefreshCw,
   FileText,
   Activity,
@@ -99,7 +98,17 @@ export const DashboardHome: React.FC<DashboardHomeProps> = ({ systemColor = 'blu
           caps.length ? `${Math.round((caps.filter(Boolean).length / caps.length) * 100)}%` : '--',
         );
       }
-      setMetricsError(null);
+      // 503 means the API is up but its database is not: history and metrics
+      // live there, the analysers do not. Say so, instead of leaving the charts
+      // blank with no explanation.
+      if (volumeRes.status === 503 || summaryRes.status === 503) {
+        setMetricsError(
+          'History and metrics are unavailable: the CEREBRO database is offline. ' +
+            'Email, news and network analysis still work.',
+        );
+      } else {
+        setMetricsError(null);
+      }
     } catch (e: any) {
       setMetricsError(e?.message ?? 'Could not reach the CEREBRO API.');
     }
@@ -384,6 +393,14 @@ export const DashboardHome: React.FC<DashboardHomeProps> = ({ systemColor = 'blu
             <Activity className={`w-4 h-4 ${palette.textClass}`} />[ THREAT ANALYTICS REAL-TIME
             OVERVIEW ]
           </h3>
+          {metricsError && (
+            <p
+              role="status"
+              className="relative z-10 -mt-3 mb-4 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200"
+            >
+              {metricsError}
+            </p>
+          )}
 
           <div className="h-80 w-full relative z-10">
             <ResponsiveContainer width="100%" height="100%">
@@ -680,7 +697,9 @@ export const DashboardHome: React.FC<DashboardHomeProps> = ({ systemColor = 'blu
                       {/* Right actions and badges */}
                       <div
                         className="flex items-center gap-3 flex-shrink-0"
+                        role="presentation"
                         onClick={(e) => e.stopPropagation()}
+                        onKeyDown={(e) => e.stopPropagation()}
                       >
                         {/* Threat severity/result badge */}
                         <div
@@ -691,16 +710,19 @@ export const DashboardHome: React.FC<DashboardHomeProps> = ({ systemColor = 'blu
                         </div>
 
                         {/* Dropdown Chevron Toggle */}
-                        <div
-                          className="text-slate-600 group-hover:text-slate-400 transition-colors px-1"
+                        <button
+                          type="button"
+                          className="text-slate-600 group-hover:text-slate-400 hover:text-slate-200 focus-visible:text-slate-200 transition-colors px-1 rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-slate-500"
                           onClick={() => handleRowClick(item.id)}
+                          aria-expanded={isExpanded}
+                          aria-label={isExpanded ? 'Collapse details' : 'Expand details'}
                         >
                           {isExpanded ? (
-                            <ChevronUp className="w-4 h-4" />
+                            <ChevronUp className="w-4 h-4" aria-hidden />
                           ) : (
-                            <ChevronDown className="w-4 h-4" />
+                            <ChevronDown className="w-4 h-4" aria-hidden />
                           )}
-                        </div>
+                        </button>
 
                         {/* Delete Trash Action */}
                         <button

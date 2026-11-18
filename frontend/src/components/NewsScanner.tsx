@@ -5,15 +5,11 @@ import { useAuth } from '../context/AuthContext';
 import { jsPDF } from 'jspdf';
 import { playCyberSFX } from '../utils/audio';
 import {
-  ShieldAlert,
   Newspaper,
-  FileText,
   Share2,
   Terminal,
-  Cpu,
   AlertTriangle,
   CheckCircle2,
-  Sparkles,
   Download,
   AlertOctagon,
   RefreshCw,

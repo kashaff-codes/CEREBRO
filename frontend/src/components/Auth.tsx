@@ -480,7 +480,9 @@ export const Auth: React.FC = () => {
                   gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.1);
                   osc.start();
                   osc.stop(audioCtx.currentTime + 0.1);
-                } catch {}
+                } catch {
+                  // Sound effects are decorative; a browser that blocks audio loses nothing.
+                }
               }
               return next;
             });
@@ -797,7 +799,10 @@ export const Auth: React.FC = () => {
 
               {!isLogin && (
                 <div className="relative group">
-                  <label className="block text-[10px] font-mono tracking-widest text-slate-400 uppercase mb-1.5 flex justify-between">
+                  <label
+                    htmlFor="auth-name"
+                    className="block text-[10px] font-mono tracking-widest text-slate-400 uppercase mb-1.5 flex justify-between"
+                  >
                     <span>ANALYST IDENTITY</span>
                     <span className="text-slate-600">[NULL]</span>
                   </label>
@@ -806,7 +811,9 @@ export const Auth: React.FC = () => {
                       &gt;&nbsp;
                     </span>
                     <input
+                      id="auth-name"
                       type="text"
+                      autoComplete="name"
                       required
                       value={name}
                       onKeyDown={() => playSFX('keyboard')}
@@ -819,7 +826,10 @@ export const Auth: React.FC = () => {
               )}
 
               <div className="relative group">
-                <label className="block text-[10px] font-mono tracking-widest text-slate-400 uppercase mb-1.5 flex justify-between">
+                <label
+                  htmlFor="auth-email"
+                  className="block text-[10px] font-mono tracking-widest text-slate-400 uppercase mb-1.5 flex justify-between"
+                >
                   <span>CRYPTO ENDPOINT EMAIL</span>
                   <span className="text-slate-600">[SECURE_SHELL]</span>
                 </label>
@@ -828,7 +838,9 @@ export const Auth: React.FC = () => {
                     &gt;&nbsp;
                   </span>
                   <input
+                    id="auth-email"
                     type="email"
+                    autoComplete="email"
                     required
                     value={email}
                     onKeyDown={() => playSFX('keyboard')}
@@ -840,7 +852,10 @@ export const Auth: React.FC = () => {
               </div>
 
               <div className="relative group">
-                <label className="block text-[10px] font-mono tracking-widest text-slate-400 uppercase mb-1.5 flex justify-between">
+                <label
+                  htmlFor="auth-password"
+                  className="block text-[10px] font-mono tracking-widest text-slate-400 uppercase mb-1.5 flex justify-between"
+                >
                   <span>SECURITY AUTH KEY</span>
                   <span className="text-slate-600">[ENCRYPTED]</span>
                 </label>
@@ -849,7 +864,9 @@ export const Auth: React.FC = () => {
                     &gt;&nbsp;
                   </span>
                   <input
+                    id="auth-password"
                     type="password"
+                    autoComplete={isLogin ? 'current-password' : 'new-password'}
                     required
                     value={password}
                     onKeyDown={() => playSFX('keyboard')}
@@ -899,12 +916,13 @@ export const Auth: React.FC = () => {
 
               <p className="text-[9px] font-mono text-slate-500 leading-relaxed text-center pt-1">
                 New here? Use{' '}
-                <span
-                  className="text-cyan-400 font-bold underline cursor-pointer"
+                <button
+                  type="button"
+                  className="text-cyan-400 font-bold underline cursor-pointer bg-transparent p-0 font-mono rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400"
                   onClick={() => setIsLogin(false)}
                 >
                   [ SIGN_UP ]
-                </span>{' '}
+                </button>{' '}
                 to create an account instantly.
               </p>
             </form>

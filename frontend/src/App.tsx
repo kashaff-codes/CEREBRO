@@ -9,7 +9,7 @@ import { Auth } from './components/Auth';
 import { Profile } from './components/Profile';
 import { useAuth } from './context/AuthContext';
 import { playCyberSFX } from './utils/audio';
-import { Shield, Radio, Terminal, AlertTriangle, Play, RefreshCw } from 'lucide-react';
+import { Terminal } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
 const App: React.FC = () => {
