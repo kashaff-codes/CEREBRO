@@ -31,7 +31,7 @@ from services.api.routers.news import _compose  # noqa: E402
 from services.ml.rag import llm_stance  # noqa: E402
 from services.ml.rag.retrieval import Document, HashingEmbedder, HybridRetriever  # noqa: E402
 from services.ml.rag.verify import (  # noqa: E402
-    ClaimVerdict, ClaimVerifier, Label, LexicalStanceModel, Stance, relevance,
+    ClaimVerdict, ClaimVerifier, EvidenceItem, Label, LexicalStanceModel, Stance, relevance,
 )
 
 MOON = Document(
@@ -209,7 +209,9 @@ def test_word_overlap_alone_never_claims_credible():
     """The fallback stance can lean, not verify (it called a London tower page support)."""
     v = _verdict(3.0, 0)
     v.model_versions = {"stance": "lexical-fallback-v2"}
-    v.evidence = [object()]  # type: ignore[list-item]
+    v.evidence = [EvidenceItem(document_id="w", url="u", title="t", snippet="s",
+                               domain="en.wikipedia.org", credibility=0.8,
+                               stance=Stance.ENTAIL, nli_score=0.9, retrieval_score=1.0)]
     out = _compose([v], [1.0], None, "eiffel tower is in london right")
     assert out["score"] >= 65            # the lean is still shown
     assert out["verdict"] == "Unverified"
