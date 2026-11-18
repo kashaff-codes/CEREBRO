@@ -391,3 +391,26 @@ async def seed_evidence_corpus(db: Any, tenant_id: str) -> int:
 
     log.info("seeded %d evidence documents for tenant %s", inserted, tenant_id)
     return inserted
+
+
+def offline_corpus() -> list:
+    """
+    The same curated documents as Documents in memory, for when there is no database.
+
+    /v1/analyze/news retrieves its evidence from cerebro.documents. Without a
+    database that query raised, so the whole fact-check answered 500 — even
+    though the documents it would have retrieved on a fresh deploy are exactly
+    these, defined in this file. Serving them from memory keeps the RAG path
+    demonstrable; the response still records score_source, and nothing here
+    claims to be anything but the curated seed.
+    """
+    from services.ml.rag.retrieval import Document
+
+    weight = {domain: w for domain, _publisher, w, _why in EVIDENCE_SOURCES}
+    docs = []
+    for external_id, title, body, url in DOCUMENTS:
+        domain = url.split("//", 1)[-1].split("/", 1)[0].removeprefix("www.")
+        docs.append(Document(id=external_id, title=title, text=body, url=url, domain=domain,
+                             credibility=float(weight.get(domain, 0.5)),
+                             meta={"curated": True, "offline": True}))
+    return docs

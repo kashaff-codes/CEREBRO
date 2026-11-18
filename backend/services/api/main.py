@@ -22,15 +22,16 @@ from __future__ import annotations
 import logging
 import os
 import time
+from collections import defaultdict
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator
 
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 
 from services.api.core.config import settings
-from services.api.core.db import db
+from services.api.core.db import DatabaseUnavailable, db
 from services.api.routers import auth as auth_router
 from services.api.routers import email as email_router
 from services.api.routers import flows as flows_router
@@ -194,11 +195,34 @@ app.add_middleware(
 )
 
 
+# Prometheus series, per route template (/v1/analyze/news, not each request URL),
+# so the label set stays bounded whatever callers send.
+_BUCKETS = (0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0)
+_req_count: dict[tuple[str, str, int], int] = defaultdict(int)
+_lat_bucket: dict[tuple[str, float], int] = defaultdict(int)
+_lat_sum: dict[str, float] = defaultdict(float)
+_lat_n: dict[str, int] = defaultdict(int)
+_STARTED = time.time()
+
+
 @app.middleware("http")
 async def add_timing_and_request_id(request: Request, call_next):
     """Latency headers on every response — you cannot optimize what you don't measure."""
     start = time.perf_counter()
-    response = await call_next(request)
+    status_code = 500
+    try:
+        response = await call_next(request)
+        status_code = response.status_code
+    finally:
+        route = getattr(request.scope.get("route"), "path", "unmatched")
+        if route != "/metrics":
+            dt = time.perf_counter() - start
+            _req_count[(request.method, route, status_code)] += 1
+            _lat_sum[route] += dt
+            _lat_n[route] += 1
+            for b in _BUCKETS:
+                if dt <= b:
+                    _lat_bucket[(route, b)] += 1
     elapsed_ms = (time.perf_counter() - start) * 1000
     response.headers["X-Response-Time-ms"] = f"{elapsed_ms:.1f}"
     response.headers["X-CEREBRO-Version"] = app.version
@@ -206,6 +230,21 @@ async def add_timing_and_request_id(request: Request, call_next):
         log.warning("slow request %s %s took %.0fms",
                     request.method, request.url.path, elapsed_ms)
     return response
+
+
+@app.exception_handler(DatabaseUnavailable)
+async def database_unavailable_handler(request: Request, exc: DatabaseUnavailable):
+    """
+    Say what is actually wrong. Without this, a missing database surfaced as the
+    generic 500 below, indistinguishable from a bug. The analysers do not need a
+    database, so the message says what still works.
+    """
+    return JSONResponse(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        content={"error": "database_unavailable",
+                 "message": "The database is offline. Email, news and network analysis still work; "
+                            "history, metrics and account changes do not."},
+    )
 
 
 @app.exception_handler(Exception)
@@ -235,6 +274,45 @@ app.include_router(metrics_router.router, prefix="/v1")
 app.include_router(flows_router.router, prefix="/v1")
 app.include_router(forecast_router.router, prefix="/v1")
 app.include_router(stream_router.router, prefix="/v1")
+
+
+@app.get("/metrics", include_in_schema=False, response_class=PlainTextResponse)
+async def prometheus_metrics() -> str:
+    """
+    Prometheus exposition for the hosted monitoring stack (apollo-m/monitoring/hosted).
+
+    Not to be confused with /v1/metrics/*, which are the dashboard's analytics
+    routes. Hand-formatted, like APOLLO-M's: the format is a few lines of text.
+    """
+    out: list[str] = []
+
+    def gauge(name: str, help_: str, value: float, labels: str = "") -> None:
+        out.extend([f"# HELP {name} {help_}", f"# TYPE {name} gauge", f"{name}{labels} {value}"])
+
+    db_up = await db.ping()
+    gauge("cerebro_database_up", "1 if PostgreSQL answered", int(db_up))
+    gauge("cerebro_uptime_seconds", "Seconds since this process started", round(time.time() - _STARTED, 1))
+    gauge("cerebro_info", "Version and LLM chain", 1,
+          '{version="%s",llm="%s"}' % (app.version, ",".join(
+              p.name for p in getattr(getattr(app.state, "llm", None), "providers", []))))
+    models = getattr(app.state, "models", {}) or {}
+    out.extend(["# HELP cerebro_model_loaded 1 if a trained model is loaded for the module",
+                "# TYPE cerebro_model_loaded gauge"])
+    for module, key in (("email", "email_classifier"), ("anomaly", "anomaly")):
+        out.append(f'cerebro_model_loaded{{module="{module}"}} {int(bool(models.get(key)))}')
+    out.extend(["# HELP cerebro_api_requests_total API requests by method, route and status",
+                "# TYPE cerebro_api_requests_total counter"])
+    for (meth, route, code), n in sorted(_req_count.items()):
+        out.append(f'cerebro_api_requests_total{{method="{meth}",route="{route}",status="{code}"}} {n}')
+    out.extend(["# HELP cerebro_api_request_seconds API request latency",
+                "# TYPE cerebro_api_request_seconds histogram"])
+    for route in sorted(_lat_n):
+        for b in _BUCKETS:
+            out.append(f'cerebro_api_request_seconds_bucket{{route="{route}",le="{b}"}} {_lat_bucket[(route, b)]}')
+        out.append(f'cerebro_api_request_seconds_bucket{{route="{route}",le="+Inf"}} {_lat_n[route]}')
+        out.append(f'cerebro_api_request_seconds_sum{{route="{route}"}} {round(_lat_sum[route], 6)}')
+        out.append(f'cerebro_api_request_seconds_count{{route="{route}"}} {_lat_n[route]}')
+    return "\n".join(out) + "\n"
 
 
 @app.get("/", include_in_schema=False)

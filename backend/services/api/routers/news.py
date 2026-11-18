@@ -75,7 +75,15 @@ async def _load_corpus(tenant_id: str) -> list[Document]:
     """
     The evidence corpus for this tenant: documents of kind 'evidence' or
     'article', joined to their source credibility weight where we know it.
+
+    With no database, the curated seed corpus is served from memory — the
+    documents a fresh deploy would have retrieved anyway — rather than failing
+    the whole fact-check with a 500.
     """
+    if not db.is_connected:
+        from services.api.core.seed_corpus import offline_corpus
+        log.warning("database unavailable: retrieving from the in-memory seed corpus")
+        return offline_corpus()
     rows = await db.fetch(
         tenant_id,
         """

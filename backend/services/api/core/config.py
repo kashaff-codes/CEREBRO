@@ -93,6 +93,12 @@ class Settings:
         }
         self.demo_email: str = os.getenv("DEMO_EMAIL", "demo@cerebro.app")
         self.demo_password: str = os.getenv("DEMO_PASSWORD", "cerebro-demo-2026")
+        # When the database is unreachable, accept the demo account above (and
+        # only it) so the analysers can still be demonstrated. See
+        # routers/auth.py::_offline_demo_login for the reasoning and limits.
+        self.offline_demo_login: bool = os.getenv("OFFLINE_DEMO_LOGIN", "true").lower() in {
+            "1", "true", "yes", "on"
+        }
 
         # Seed the demo evidence corpus IF the tenant has no evidence documents.
         # Without a corpus there is nothing to retrieve, so /analyze/news falls

@@ -21,7 +21,9 @@ not yet wired — it returns 501 rather than pretending to succeed.
 
 from __future__ import annotations
 
+import hmac
 import logging
+import uuid
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
@@ -80,8 +82,54 @@ def _set_session_cookie(response: Response, token: str) -> None:
     )
 
 
+# Stable identifiers for the offline demo principal, so a token issued while the
+# database is down stays meaningful across restarts.
+OFFLINE_TENANT_ID = str(uuid.uuid5(uuid.NAMESPACE_URL, "https://cerebro.app/offline-demo/tenant"))
+OFFLINE_USER_ID = str(uuid.uuid5(uuid.NAMESPACE_URL, "https://cerebro.app/offline-demo/user"))
+
+
+def _offline_demo_login(req: LoginRequest, response: Response) -> LoginResponse:
+    """
+    Sign in the demo account when there is no database to look it up in.
+
+    Why: the Render free-tier PostgreSQL behind this service was deleted when its
+    free period ended. From then on every login answered 500, so nobody could
+    reach the email, news and network analysers — which need no database at
+    all. This keeps them demonstrable while the database is gone.
+
+    Limits, deliberately narrow:
+      * only when the database is genuinely unreachable (no pool) — with a
+        database, login is the normal path and this is never consulted;
+      * only the configured demo account (DEMO_EMAIL / DEMO_PASSWORD), whose
+        credentials are already published in the README, so this grants
+        nothing a visitor could not already do with the database up;
+      * constant-time comparison of both fields;
+      * no session row is written (there is nowhere to write it), so the token
+        simply expires; OFFLINE_DEMO_LOGIN=false turns the whole path off.
+    Any other account gets 503, not 401: its credentials were never checked,
+    so "wrong password" would be a lie.
+    """
+    ok_email = hmac.compare_digest(req.email.lower().encode(), settings.demo_email.lower().encode())
+    ok_pw = hmac.compare_digest(req.password.encode(), settings.demo_password.encode())
+    if not (settings.offline_demo_login and ok_email and ok_pw):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="The account database is offline, so only the demo account can sign in right now.",
+        )
+    log.warning("database unavailable: issuing an offline demo session")
+    token = create_access_token(
+        user_id=OFFLINE_USER_ID, tenant_id=OFFLINE_TENANT_ID, role="owner",
+        secret=settings.secret_key, ttl_minutes=settings.access_token_ttl_minutes,
+    )
+    _set_session_cookie(response, token)
+    return LoginResponse(user_id=OFFLINE_USER_ID, tenant_id=OFFLINE_TENANT_ID, role="owner",
+                         display_name="Demo (offline mode)", access_token=token)
+
+
 @router.post("/login", response_model=LoginResponse)
 async def login(req: LoginRequest, request: Request, response: Response) -> LoginResponse:
+    if not db.is_connected:
+        return _offline_demo_login(req, response)
     # Uniform failure for "no such user" and "wrong password": revealing which
     # one is true hands an attacker an account-enumeration oracle.
     user = await db.fetch_unscoped(
@@ -209,6 +257,10 @@ async def logout(response: Response) -> dict[str, str]:
 
 @router.get("/me", summary="The authenticated principal")
 async def me(principal: Principal = Depends(current_principal)) -> dict[str, Any]:
+    if not db.is_connected and principal.user_id == OFFLINE_USER_ID:
+        return {"user_id": OFFLINE_USER_ID, "tenant_id": OFFLINE_TENANT_ID, "email": settings.demo_email,
+                "display_name": "Demo (offline mode)", "role": "owner", "last_seen_at": None,
+                "offline": True}
     row = await db.fetch_unscoped(
         """
         SELECT id, tenant_id, email, display_name, role, last_seen_at

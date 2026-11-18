@@ -41,6 +41,19 @@ log = logging.getLogger(__name__)
 EVENT_CHANNEL = "cerebro_events"
 
 
+class DatabaseUnavailable(RuntimeError):
+    """
+    There is no database to run this on.
+
+    A RuntimeError subclass so existing `except RuntimeError` callers keep
+    working, but distinct, so the API can answer 503 "database unavailable"
+    instead of an opaque 500. That distinction matters in practice: the Render
+    free-tier PostgreSQL this service used was deleted when its free period
+    ended, and from then on every database-backed route reported only
+    "internal_error".
+    """
+
+
 def _asyncpg_dsn(url: str) -> str:
     """
     Normalize a SQLAlchemy-style URL to what asyncpg accepts.
@@ -114,7 +127,7 @@ class Database:
         another request next. Forgetting this is how multi-tenant systems leak.
         """
         if self._pool is None:
-            raise RuntimeError("database pool is not initialized")
+            raise DatabaseUnavailable("database pool is not initialized")
         async with self._pool.acquire() as conn:
             async with conn.transaction():
                 await conn.execute(
@@ -144,7 +157,7 @@ class Database:
         Never use this for tenant data — it bypasses the RLS scoping above.
         """
         if self._pool is None:
-            raise RuntimeError("database pool is not initialized")
+            raise DatabaseUnavailable("database pool is not initialized")
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(sql, *args)
             return [dict(r) for r in rows]
@@ -160,7 +173,7 @@ class Database:
         triggers in the schema apply cleanly.
         """
         if self._pool is None:
-            raise RuntimeError("database pool is not initialized")
+            raise DatabaseUnavailable("database pool is not initialized")
         schema_path = Path(__file__).resolve().parents[3] / "db" / "schema_portable.sql"
         sql = schema_path.read_text(encoding="utf-8")
         async with self._pool.acquire() as conn:
