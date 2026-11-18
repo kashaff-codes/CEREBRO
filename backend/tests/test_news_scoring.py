@@ -203,3 +203,14 @@ def test_web_evidence_reliability_table():
     assert reliability("edition.cnn.com") == 0.8          # parent domain
     assert reliability("unknown-local-paper.example") == DEFAULT
     assert reliability("infowars.com") < 0.2
+
+
+def test_word_overlap_alone_never_claims_credible():
+    """The fallback stance can lean, not verify (it called a London tower page support)."""
+    v = _verdict(3.0, 0)
+    v.model_versions = {"stance": "lexical-fallback-v2"}
+    v.evidence = [object()]  # type: ignore[list-item]
+    out = _compose([v], [1.0], None, "eiffel tower is in london right")
+    assert out["score"] >= 65            # the lean is still shown
+    assert out["verdict"] == "Unverified"
+    assert out["confidence_label"] == "Low"

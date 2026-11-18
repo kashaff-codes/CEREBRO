@@ -225,11 +225,22 @@ def _compose(
         c["share"] = round(c["weight"] / total, 3) if c["score"] is not None else 0.0
 
     confidence = (w_e + w_f) / (w_e + w_f + 0.6)
+    # Stance from word overlap alone (no NLI model, no LLM answered) can lean,
+    # but it cannot verify: "eiffel tower is in london right" overlaps a page
+    # about a London tower. Such a run never says Credible or Fake News, only
+    # how it leans, unless a published fact-check is behind it.
+    weak = (not fact_check and any(
+        str(v.model_versions.get("stance", "")).startswith("lexical") for v in verdicts if v.evidence))
+    if weak:
+        confidence = min(confidence, 0.3)
+        for c in comps:
+            if c["key"] == "evidence" and c["score"] is not None:
+                c["detail"] += " Stance by word overlap only (fallback mode): indicative, not verified."
     conf_label = ("High" if confidence >= 0.6 else "Medium" if confidence >= 0.35
                   else "Low" if confidence >= 0.05 else "Style only")
 
     both_sides = any(v.support_weight > 0 and v.refute_weight > 0 for v in verdicts)
-    if confidence < 0.2:
+    if confidence < 0.2 or weak:
         verdict = "Unverified"
     elif score >= 65:
         verdict = "Credible"
