@@ -13,10 +13,13 @@ server schema literally called them "simulated references". Here:
 
   1. the article is segmented into checkable claims (the one legitimate LLM job,
      with a sentence-split fallback when no model is available);
-  2. each claim is verified against the tenant's evidence corpus with hybrid
-     retrieval + NLI stance;
-  3. the credibility score is the evidence-weighted support across claims;
-  4. every source returned is a URL of a document that was actually retrieved.
+  2. evidence is gathered from the tenant's corpus, the live web (Wikipedia,
+     GDELT news) and published fact-checks, and gated for relevance;
+  3. each passage's stance toward each claim is judged (an LLM reading the
+     passage, the NLI model, or the lexical fallback);
+  4. the credibility score is a weighted mean of named components, returned
+     with the score so the UI can show exactly where the number came from;
+  5. every source returned is a URL of a document that was actually retrieved.
 
 If the corpus has nothing relevant, the honest answer is a low-confidence
 "insufficient evidence" — not a confident fabrication. The `sources` array can
@@ -25,6 +28,7 @@ therefore be empty, and that is a feature.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import re
@@ -36,6 +40,7 @@ from services.api.core.config import settings
 from services.api.core.db import db, emit_detection
 from services.api.core.deps import Principal, current_principal
 from services.ml.rag.retrieval import Document
+from services.ml.rag import llm_stance, web_evidence
 from services.ml.rag.verify import ClaimVerdict, Label, build_default_verifier
 
 log = logging.getLogger(__name__)
@@ -68,7 +73,13 @@ class NewsAnalyzeResponse(BaseModel):
     # the existing client keeps working while new clients can show provenance.
     claims_checked: int
     model_versions: dict[str, str]
-    score_source: str = "rag_evidence"
+    score_source: str = "evidence"
+    # How the score was built, so the UI can show its working.
+    confidence: float = 0.0
+    confidence_label: str = "Style only"
+    breakdown: list[dict] = []
+    claims: list[dict] = []
+    evidence_sources: dict[str, str] = {}
 
 
 async def _load_corpus(tenant_id: str) -> list[Document]:
@@ -113,49 +124,132 @@ async def _load_corpus(tenant_id: str) -> list[Document]:
     return corpus
 
 
-def _to_credibility(verdicts: list[ClaimVerdict]) -> tuple[int, str, str]:
+def _compose(
+    verdicts: list[ClaimVerdict],
+    worth: list[float],
+    fact_check: tuple[int, str, str, list[str]] | None,
+    text: str,
+) -> dict:
     """
-    Fold per-claim verdicts into an overall 0-100 credibility score, a verdict
-    label the UI understands, and a one-line reasoning string.
+    Fold everything that was measured into one 0-100 score, and keep the parts.
 
-    Credibility is high when claims are SUPPORTED, low when REFUTED, and lands
-    near the middle (with explicit uncertainty) when evidence is insufficient —
-    an unverifiable article is not the same as a false one, and the score says so.
+    The score is a weighted mean of components, and every component is returned
+    with its own score, weight and one-line reason, so the number on screen can
+    be taken apart. The old version averaged per-claim labels, and every label
+    that missed a confidence threshold counted as exactly 0.5 — which is why
+    nearly every article scored 50.
+
+      evidence     how strongly the retrieved passages support or refute each
+                   claim: P(true) = (support + 0.5) / (support + refute + 1),
+                   averaged over claims by check-worthiness x certainty.
+                   Weight grows with how much evidence there is.
+      fact_check   ratings from published fact-checks (Google Fact Check
+                   Tools), when any exist. The strongest single signal.
+      language     sensationalism, conspiracy markers, attribution. Style, not
+                   truth, so it only ever carries a small weight.
+      prior        50, the honest answer with nothing to go on. Its weight
+                   shrinks to zero as real evidence arrives, so thin evidence
+                   reads as "uncertain" rather than as a confident verdict.
     """
-    if not verdicts:
-        return 50, "Unverified", "No checkable claims were extracted from the text."
+    comps: list[dict] = []
 
-    per_claim: list[float] = []
-    refuted = supported = insufficient = 0
-    for v in verdicts:
-        if v.label is Label.SUPPORTED:
-            per_claim.append(0.5 + 0.5 * v.confidence)
-            supported += 1
-        elif v.label is Label.REFUTED:
-            per_claim.append(0.5 - 0.5 * v.confidence)
-            refuted += 1
-        elif v.label is Label.DISPUTED:
-            per_claim.append(0.5)
-        else:  # INSUFFICIENT
-            per_claim.append(0.5)
-            insufficient += 1
+    # Evidence -----------------------------------------------------------------
+    w_e = 0.0
+    if verdicts:
+        cw = [max(0.1, min(1.0, x)) for x in worth]
+        mass = [c * v.certainty for c, v in zip(cw, verdicts)]
+        coverage = sum(1 for v in verdicts if v.evidence)
+        sup = sum(1 for v in verdicts for e in v.evidence if e.stance.value == "entail")
+        ref = sum(1 for v in verdicts for e in v.evidence if e.stance.value == "contradict")
+        domains = {e.domain for v in verdicts for e in v.evidence if e.domain}
+        if sum(mass) > 0:
+            ev = 100 * sum(m * v.probability for m, v in zip(mass, verdicts)) / sum(mass)
+            certainty = sum(c * v.certainty for c, v in zip(cw, verdicts)) / sum(cw)
+            w_e = 1.5 * certainty
+            comps.append({
+                "key": "evidence", "label": "Evidence agreement",
+                "score": round(ev, 1), "weight": round(w_e, 3),
+                "detail": (f"{coverage} of {len(verdicts)} claim(s) had relevant evidence: "
+                           f"{sup} passage(s) support, {ref} refute, from "
+                           f"{len(domains)} source(s)."),
+            })
+        else:
+            comps.append({
+                "key": "evidence", "label": "Evidence agreement",
+                "score": None, "weight": 0.0,
+                "detail": (f"Searched the evidence corpus and the live web for "
+                           f"{len(verdicts)} claim(s); {coverage} had related passages, "
+                           "none of which took a side."),
+            })
 
-    score = int(round(100 * (sum(per_claim) / len(per_claim))))
+    # Published fact-checks ----------------------------------------------------
+    w_f = 0.0
+    if fact_check:
+        fc_score, _fc_verdict, fc_reason, fc_sources = fact_check
+        w_f = 1.5 * min(1.0, max(1, len(fc_sources)) / 2)
+        comps.append({
+            "key": "fact_check", "label": "Published fact-checks",
+            "score": float(fc_score), "weight": round(w_f, 3),
+            "detail": fc_reason.split(" — ", 1)[-1][:240],
+        })
 
-    if refuted and refuted >= supported:
-        verdict = "Fake News" if score < 40 else "Misleading"
-    elif supported and insufficient <= supported:
-        verdict = "Credible"
-    else:
+    # Language -----------------------------------------------------------------
+    lang_score, _lv, lang_reason = _heuristic_credibility(text)
+    w_l = 0.2
+    signals = lang_reason.split("Signals — ", 1)[-1] if "Signals — " in lang_reason \
+        else "No strong linguistic signals either way."
+    comps.append({
+        "key": "language", "label": "Language signals",
+        "score": float(lang_score), "weight": w_l, "detail": signals,
+    })
+
+    # Uncertainty prior --------------------------------------------------------
+    w_p = 0.35 * max(0.0, 1.0 - min(1.0, w_e + w_f))
+    if w_p > 0:
+        comps.append({
+            "key": "prior", "label": "Uncertainty prior",
+            "score": 50.0, "weight": round(w_p, 3),
+            "detail": "Pulls the score toward 50 in proportion to how little evidence was found.",
+        })
+
+    total = sum(c["weight"] for c in comps if c["score"] is not None)
+    score = sum(c["score"] * c["weight"] for c in comps if c["score"] is not None) / total
+    for c in comps:
+        c["share"] = round(c["weight"] / total, 3) if c["score"] is not None else 0.0
+
+    confidence = (w_e + w_f) / (w_e + w_f + 0.6)
+    conf_label = ("High" if confidence >= 0.6 else "Medium" if confidence >= 0.35
+                  else "Low" if confidence >= 0.05 else "Style only")
+
+    both_sides = any(v.support_weight > 0 and v.refute_weight > 0 for v in verdicts)
+    if confidence < 0.2:
         verdict = "Unverified"
+    elif score >= 65:
+        verdict = "Credible"
+    elif score <= 30:
+        verdict = "Fake News"
+    elif score < 45:
+        verdict = "Misleading"
+    else:
+        verdict = "Disputed" if both_sides else "Unverified"
 
+    supported = sum(1 for v in verdicts if v.label is Label.SUPPORTED)
+    refuted = sum(1 for v in verdicts if v.label is Label.REFUTED)
     reasoning = (
-        f"Checked {len(verdicts)} claim(s): {supported} supported, {refuted} refuted, "
-        f"{insufficient} without sufficient evidence in the corpus. "
-        "Score is the evidence-weighted support across claims; where the corpus "
-        "lacked relevant documents the claim was counted as uncertain, not false."
+        f"Checked {len(verdicts)} claim(s): {supported} supported and {refuted} refuted by "
+        f"the evidence. Score {round(score)} is the weighted mean of "
+        + ", ".join(f"{c['label'].lower()} {c['score']:.0f} (weight {c['share']:.0%})"
+                    for c in comps if c["score"] is not None)
+        + f". Confidence: {conf_label.lower()}."
     )
-    return max(0, min(100, score)), verdict, reasoning
+    return {
+        "score": max(0, min(100, int(round(score)))),
+        "verdict": verdict,
+        "reasoning": reasoning,
+        "confidence": round(confidence, 3),
+        "confidence_label": conf_label,
+        "breakdown": comps,
+    }
 
 
 # --- linguistic-credibility fallback (used only when the corpus has no evidence) ---
@@ -368,57 +462,80 @@ async def _narrate(
         return reasoning
 
 
-@router.post("/news", response_model=NewsAnalyzeResponse, summary="Verify claims in text against the evidence corpus")
+MAX_CLAIMS = 5
+
+
+async def _claims(request: Request, text: str) -> list[tuple[str, float]]:
+    """The article's most check-worthy claims, with their check-worthiness."""
+    try:
+        from services.ml.providers.llm import extract_claims
+        extracted = await extract_claims(request.app.state.llm, text)
+        rows = [(c["text"].strip(), float(c.get("check_worthy", 0.5)))
+                for c in extracted if c.get("text", "").strip()]
+    except Exception as exc:  # noqa: BLE001
+        log.warning("claim extraction fell back to sentence split: %s", exc)
+        rows = [(s.strip(), 0.5) for s in re.split(r"(?<=[.!?])\s+", text)
+                if len(s.strip()) > 40]
+    rows.sort(key=lambda r: -r[1])
+    return rows[:MAX_CLAIMS] or [(text.strip()[:500], 1.0)]
+
+
+@router.post("/news", response_model=NewsAnalyzeResponse, summary="Verify claims in text against retrieved evidence")
 async def analyze_news(
     req: NewsAnalyzeRequest,
     request: Request,
     principal: Principal = Depends(current_principal),
 ) -> NewsAnalyzeResponse:
-    corpus = await _load_corpus(principal.tenant_id)
+    llm = request.app.state.llm
+    claims = await _claims(request, req.text)
+    texts = [c for c, _ in claims]
 
-    # Build the best verifier the environment supports (real transformers if
-    # present, offline-capable fallback otherwise — it logs which it got).
-    verifier = build_default_verifier(corpus, prefer_transformers=True)
+    # Evidence: the tenant corpus, the live web, and published fact-checks, at once.
+    corpus, web, fc = await asyncio.gather(
+        _load_corpus(principal.tenant_id),
+        web_evidence.gather(texts, req.text),
+        _fact_check(req.text),
+        return_exceptions=True,
+    )
+    if isinstance(corpus, BaseException):
+        raise corpus
+    web_docs, source_status = ([], {"web": "unavailable"}) if isinstance(web, BaseException) else web
+    if isinstance(fc, BaseException):
+        fc = None
+    source_status["corpus"] = f"{len(corpus)} documents"
+    source_status["fact_check"] = "ok" if fc else (
+        "no published checks" if settings.fact_check_api_key else "not configured")
 
-    # Claim extraction is the one legitimate generative-LLM job. Fall back to a
-    # sentence split if no provider answers — degraded, but never a hard failure.
-    try:
-        from services.ml.providers.llm import extract_claims
-        extracted = await extract_claims(request.app.state.llm, req.text)
-        claim_texts = [c["text"] for c in extracted if c.get("text")]
-    except Exception as exc:  # noqa: BLE001
-        log.warning("claim extraction fell back to sentence split: %s", exc)
-        import re
-        claim_texts = [
-            s.strip() for s in re.split(r"(?<=[.!?])\s+", req.text) if len(s.strip()) > 40
-        ][:12]
+    verifier = build_default_verifier(list(corpus) + list(web_docs), prefer_transformers=True)
+    hits = [verifier.candidates(t) for t in texts]
 
-    if not claim_texts:
-        claim_texts = [req.text[:500]]
+    # Stance: an LLM reading each passage when one answers; otherwise the NLI
+    # model when installed, or the lexical fallback. Same arithmetic after.
+    judged = await asyncio.gather(*(llm_stance.judge(llm, t, h) for t, h in zip(texts, hits)))
+    verdicts: list[ClaimVerdict] = []
+    for t, h, j in zip(texts, hits, judged):
+        if j is None:
+            stances = [verifier.stance_model.predict(t, x.document.searchable) for x in h]
+            verdicts.append(verifier.assess(t, h, stances))
+        else:
+            verdicts.append(verifier.assess(t, h, j[0], stance_name=j[1]))
 
-    verdicts = [verifier.verify(c) for c in claim_texts]
+    result = _compose(verdicts, [w for _, w in claims], fc, req.text)
+    score, verdict, reasoning = result["score"], result["verdict"], result["reasoning"]
 
-    # Sources: only URLs of documents that were actually retrieved and scored.
-    sources: list[str] = []
-    for v in verdicts:
-        for url in v.citations:
-            if url and url not in sources:
-                sources.append(url)
+    # Sources: published fact-checks first, then passages that took a side, then
+    # the rest of what was judged. Never a document that was not retrieved.
+    sources: list[str] = list(fc[3]) if fc else []
+    ranked = sorted(
+        (e for v in verdicts for e in v.evidence),
+        key=lambda e: (e.stance.value == "neutral", -e.credibility),
+    )
+    for e in ranked:
+        if e.url and e.url not in sources:
+            sources.append(e.url)
 
-    score, verdict, reasoning = _to_credibility(verdicts)
-    score_source = "rag_evidence"
-    decisive = any(v.label in (Label.SUPPORTED, Label.REFUTED) for v in verdicts)
-
-    # Preferred source of truth: real published fact-checks (with citable URLs).
-    fc = await _fact_check(req.text)
-    if fc:
-        score, verdict, reasoning, sources = fc
-        score_source = "fact_check"
-    elif not decisive and not sources:
-        # No corpus evidence and no fact-check hit → transparent linguistic
-        # heuristic so the score still reflects the text, clearly labeled.
-        score, verdict, reasoning = _heuristic_credibility(req.text)
-        score_source = "heuristic"
+    weights = {c["key"]: c["weight"] for c in result["breakdown"] if c["score"] is not None}
+    score_source = max(weights, key=lambda k: weights[k]) if weights else "language"
 
     summary = req.text.strip().replace("\n", " ")
     summary = (summary[:280] + "…") if len(summary) > 280 else summary
@@ -432,6 +549,24 @@ async def analyze_news(
     model_versions: dict[str, str] = {}
     for v in verdicts:
         model_versions.update(v.model_versions)
+
+    claim_rows = []
+    for (text, worth), v in zip(claims, verdicts):
+        claim_rows.append({
+            "text": text,
+            "check_worthy": round(worth, 2),
+            "label": v.label.value,
+            "probability": round(v.probability, 3),
+            "certainty": round(v.certainty, 3),
+            "support": round(v.support_weight, 3),
+            "refute": round(v.refute_weight, 3),
+            "evidence": [
+                {"title": e.title, "url": e.url, "domain": e.domain,
+                 "stance": e.stance.value, "confidence": round(e.nli_score, 3),
+                 "reliability": round(e.credibility, 2), "snippet": e.snippet[:220]}
+                for e in v.evidence
+            ],
+        })
 
     # Persist so metrics populate and the data is collectable. Risk is the
     # inverse of credibility (a low-credibility claim is a high-risk detection).
@@ -452,4 +587,9 @@ async def analyze_news(
         claims_checked=len(verdicts),
         model_versions=model_versions,
         score_source=score_source,
+        confidence=result["confidence"],
+        confidence_label=result["confidence_label"],
+        breakdown=result["breakdown"],
+        claims=claim_rows,
+        evidence_sources=source_status,
     )

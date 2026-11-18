@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+os.environ["WEB_EVIDENCE"] = "0"  # the suite never reaches the network
 os.environ.setdefault("SECRET_KEY", "test-secret-key-that-is-long-enough-0123456789")
 UNREACHABLE = "postgresql://nobody:nothing@127.0.0.1:1/missing"
 

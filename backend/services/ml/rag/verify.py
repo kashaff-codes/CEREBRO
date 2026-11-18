@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Protocol, Sequence
@@ -84,6 +85,25 @@ class ClaimVerdict:
     model_versions: dict[str, str] = field(default_factory=dict)
 
     @property
+    def probability(self) -> float:
+        """
+        P(claim is true | evidence), as a smoothed share of the evidence weight.
+
+        (support + 0.5) / (support + refute + 1): with no evidence it is exactly
+        0.5, and each supporting or refuting passage moves it in proportion to
+        its weight (stance confidence x source reliability x rank). Unlike the
+        label it never snaps back to 0.5 because a threshold was missed, which
+        is why every unfamiliar claim used to score exactly 50.
+        """
+        return (self.support_weight + 0.5) / (self.support_weight + self.refute_weight + 1.0)
+
+    @property
+    def certainty(self) -> float:
+        """How much evidence stands behind `probability`, 0..1."""
+        total = self.support_weight + self.refute_weight
+        return total / (total + 1.0)
+
+    @property
     def citations(self) -> list[str]:
         """Only URLs of documents that were actually retrieved and scored."""
         return [e.url for e in self.evidence if e.url]
@@ -95,6 +115,8 @@ class ClaimVerdict:
             "confidence": round(self.confidence, 4),
             "support_weight": round(self.support_weight, 4),
             "refute_weight": round(self.refute_weight, 4),
+            "probability": round(self.probability, 4),
+            "certainty": round(self.certainty, 4),
             "evidence_count": len(self.evidence),
             "evidence": [e.as_dict() for e in self.evidence],
             "citations": self.citations,
@@ -158,46 +180,134 @@ class NLIStanceModel:
         return Stance.NEUTRAL, score
 
 
+_WORD = re.compile(r"[A-Za-z0-9]+")
+
+
 class LexicalStanceModel:
     """
     Dependency-free fallback for offline testing and cold start.
 
-    Overlap plus negation-mismatch heuristics. Genuinely weak — it is here so
-    the pipeline is testable and degrades to *worse stance detection* rather
-    than crashing when transformers is unavailable. Never report metrics from
+    Overlap plus negation heuristics. Genuinely weak — it is here so the
+    pipeline is testable and degrades to *worse stance detection* rather than
+    crashing when no stronger judge is available. Never report metrics from
     this model as if they were the system's accuracy.
+
+    Two kinds of negation, because treating them alike was a real bug:
+
+    * Debunk markers ("false", "hoax", "debunked", ...) state a verdict about a
+      claim. When the passage names the claim it debunks ("the claim that the
+      landings were faked is false"), the marker counts only if OUR claim is
+      that one; otherwise it counts anywhere.
+    * Plain negators ("not", "no", "never", ...) negate the word right after
+      them, so they count only when that word is shared with the claim.
+
+    Counting both anywhere made "NASA landed astronauts on the Moon in 1969"
+    read as contradicted by "the claim that the Moon landings were faked is
+    false", and a true claim scored 17/100.
     """
 
-    name = "lexical-fallback-v1"
+    name = "lexical-fallback-v2"
 
-    _NEGATIONS = frozenset({
+    _NEGATORS = frozenset({
         "not", "no", "never", "none", "neither", "nor", "cannot", "cant",
-        "didnt", "doesnt", "isnt", "wasnt", "werent", "wont", "denied",
-        "denies", "false", "hoax", "debunked", "refuted", "incorrect",
-        "untrue", "misleading", "fabricated",
+        "didnt", "doesnt", "isnt", "wasnt", "werent", "wont", "denied", "denies",
     })
+    _DEBUNK = frozenset({
+        "false", "hoax", "debunked", "refuted", "incorrect", "untrue",
+        "misleading", "fabricated", "myth", "baseless", "unfounded",
+    })
+    _NEGATIONS = _NEGATORS | _DEBUNK
+
+    @staticmethod
+    def _stem(t: str) -> str:
+        return t[:5] if len(t) > 5 else t
+
+    @staticmethod
+    def _specifics(text: str) -> set[str]:
+        """Names and numbers: capitalised words after the first, and any digits."""
+        words = _WORD.findall(text)
+        return {w.lower() for i, w in enumerate(words)
+                if any(ch.isdigit() for ch in w) or (i > 0 and w[:1].isupper())}
+
+    _DEBUNKED_SPAN = re.compile(
+        r"\b(?:claims?|idea|notion|rumou?rs?|theory|theories|allegations?)\s+that\s+"
+        r"(.{5,240}?)\s+(?:is|are|was|were|has been|have been)\s+"
+        r"(?:false|untrue|baseless|unfounded|a myth|a hoax|debunked|incorrect|"
+        r"fabricated|not supported)",
+        re.IGNORECASE,
+    )
+
+    def _debunks_claim(self, text: str, tokens: list[str], claim_stems: set[str]) -> bool:
+        if not any(t in self._DEBUNK for t in tokens):
+            return False
+        from services.ml.rag.retrieval import tokenize
+
+        spans = self._DEBUNKED_SPAN.findall(text)
+        if not spans:
+            return True  # the passage calls something false; assume it is this
+        for span in spans:
+            span_stems = {self._stem(t) for t in tokenize(span)}
+            if len(claim_stems & span_stems) >= 0.5 * len(claim_stems):
+                return True
+        return False
+
+    def _negated(self, text: str, tokens: list[str], shared: set[str],
+                 claim_stems: set[str]) -> bool:
+        if self._debunks_claim(text, tokens, claim_stems):
+            return True
+        stems = [self._stem(t) for t in tokens]
+        return any(
+            t in self._NEGATORS and i + 1 < len(stems) and stems[i + 1] in shared
+            for i, t in enumerate(tokens)
+        )
 
     def predict(self, claim: str, evidence: str) -> tuple[Stance, float]:
         from services.ml.rag.retrieval import tokenize
 
-        claim_tokens = set(tokenize(claim))
+        claim_tokens = tokenize(claim)
         evidence_tokens = tokenize(evidence)
-        evidence_set = set(evidence_tokens)
-        if not claim_tokens or not evidence_set:
+        claim_stems = {self._stem(t) for t in claim_tokens if t not in self._NEGATIONS}
+        evidence_stems = {self._stem(t) for t in evidence_tokens}
+        if not claim_stems or not evidence_stems:
             return Stance.NEUTRAL, 0.5
 
-        overlap = len(claim_tokens & evidence_set) / len(claim_tokens)
+        shared = claim_stems & evidence_stems
+        overlap = len(shared) / len(claim_stems)
         if overlap < 0.25:
             return Stance.NEUTRAL, 0.5 + 0.3 * (1 - overlap)
 
-        # A negation present on one side but not the other flips the stance.
-        claim_negated = bool(claim_tokens & self._NEGATIONS)
-        evidence_negated = bool(evidence_set & self._NEGATIONS)
+        claim_negated = any(t in self._NEGATIONS for t in claim_tokens)
+        evidence_negated = self._negated(evidence, evidence_tokens, shared, claim_stems)
         confidence = min(0.5 + overlap * 0.45, 0.95)
 
         if claim_negated != evidence_negated:
             return Stance.CONTRADICT, confidence
+        # Support needs every name and number in the claim to be in the passage:
+        # otherwise "The Eiffel Tower is in London" is "supported" by a passage
+        # about the Eiffel Tower in Paris, since most of the words match.
+        missing = self._specifics(claim) - {t.lower() for t in _WORD.findall(evidence)}
+        if missing:
+            return Stance.NEUTRAL, 0.5
         return Stance.ENTAIL, confidence
+
+
+def relevance(claim: str, passage: str) -> float:
+    """
+    Share of the claim's content words (5-letter stems) that the passage contains.
+
+    Retrieval always returns *something*: the hashing embedder gives every
+    document a non-zero cosine. Without this gate, "The Eiffel Tower is in
+    Paris" was "checked" against six WHO pages on vaccines and cited them.
+    Evidence below the gate is not judged, weighed or cited.
+    """
+    from services.ml.rag.retrieval import tokenize
+
+    stem = LexicalStanceModel._stem
+    c = {stem(t) for t in tokenize(claim) if t not in LexicalStanceModel._NEGATIONS}
+    if not c:
+        return 0.0
+    p = {stem(t) for t in tokenize(passage)}
+    return len(c & p) / len(c)
 
 
 # ---------------------------------------------------------------------------
@@ -254,6 +364,7 @@ class ClaimVerifier:
         evidence_k: int = 6,
         min_confidence: float = 0.55,
         min_evidence: int = 1,
+        min_relevance: float = 0.34,
     ) -> None:
         self.retriever = retriever
         self.stance_model = stance_model or LexicalStanceModel()
@@ -262,32 +373,57 @@ class ClaimVerifier:
         self.evidence_k = evidence_k
         self.min_confidence = min_confidence
         self.min_evidence = min_evidence
+        self.min_relevance = min_relevance
+
+    def candidates(self, claim: str) -> list[ScoredDocument]:
+        """Retrieve, rerank, and keep only passages relevant enough to judge."""
+        if not claim or not claim.strip():
+            return []
+        hits = self.retriever.search(claim, top_k=self.candidate_k)
+        if self.reranker is not None:
+            hits = self.reranker.rerank(claim, hits, top_k=self.candidate_k)
+        hits = [h for h in hits
+                if relevance(claim, h.document.searchable) >= self.min_relevance]
+        return hits[:self.evidence_k]
 
     def verify(self, claim: str) -> ClaimVerdict:
-        if not claim or not claim.strip():
-            return ClaimVerdict(claim=claim, label=Label.INSUFFICIENT, confidence=0.0)
+        hits = self.candidates(claim)
+        stances = [self.stance_model.predict(claim, h.document.searchable) for h in hits]
+        return self.assess(claim, hits, stances)
 
-        hits = self.retriever.search(claim, top_k=self.candidate_k)
+    def assess(
+        self,
+        claim: str,
+        hits: Sequence[ScoredDocument],
+        stances: Sequence[tuple[Stance, float]],
+        *,
+        stance_name: str | None = None,
+    ) -> ClaimVerdict:
+        """
+        Turn judged evidence into a verdict. Stance can come from any judge (the
+        NLI model, an LLM reading each passage, or the lexical fallback); the
+        arithmetic is the same for all of them and is stored on the verdict.
+        """
+        versions = self._versions()
+        if stance_name:
+            versions["stance"] = stance_name
+        if not claim or not claim.strip():
+            return ClaimVerdict(claim=claim, label=Label.INSUFFICIENT,
+                                confidence=0.0, model_versions=versions)
 
         # No evidence means no verdict. This branch is the whole point of the
         # module — v1 had no equivalent and always produced a confident answer.
         if not hits:
             return ClaimVerdict(
                 claim=claim, label=Label.INSUFFICIENT, confidence=0.0,
-                explanation="No documents in the evidence corpus matched this claim.",
-                model_versions=self._versions(),
+                explanation="No relevant documents were found for this claim.",
+                model_versions=versions,
             )
-
-        if self.reranker is not None:
-            hits = self.reranker.rerank(claim, hits, top_k=self.evidence_k)
-        else:
-            hits = hits[:self.evidence_k]
 
         evidence: list[EvidenceItem] = []
         support = refute = 0.0
 
-        for rank, hit in enumerate(hits, start=1):
-            stance, nli_score = self.stance_model.predict(claim, hit.document.searchable)
+        for rank, (hit, (stance, nli_score)) in enumerate(zip(hits, stances), start=1):
             # Rank decay: the 6th result should not count as much as the 1st.
             rank_weight = 1.0 / math.log2(rank + 1.5)
             weight = nli_score * hit.document.credibility * rank_weight
@@ -315,7 +451,7 @@ class ClaimVerifier:
         return ClaimVerdict(
             claim=claim, label=label, confidence=confidence,
             evidence=evidence, support_weight=support, refute_weight=refute,
-            model_versions=self._versions(),
+            model_versions=versions,
         )
 
     def _aggregate(
