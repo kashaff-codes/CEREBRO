@@ -112,8 +112,9 @@ async def wikipedia(client: Any, query: str, n: int = 3) -> list[Document]:
         "https://en.wikipedia.org/w/api.php",
         params={
             "action": "query", "generator": "search", "gsrsearch": query,
-            "gsrlimit": n, "prop": "extracts", "exintro": 1, "explaintext": 1,
-            "exsentences": 6, "format": "json", "formatversion": 2,
+            "gsrlimit": n, "prop": "extracts|pageimages|info", "exintro": 1,
+            "explaintext": 1, "exsentences": 6, "piprop": "thumbnail",
+            "pithumbsize": 640, "inprop": "url", "format": "json", "formatversion": 2,
         },
     )
     r.raise_for_status()
@@ -123,10 +124,11 @@ async def wikipedia(client: Any, query: str, n: int = 3) -> list[Document]:
             id=f"wiki:{p['pageid']}",
             title=f"Wikipedia: {p.get('title', '')}",
             text=(p.get("extract") or "")[:1800],
-            url=f"https://en.wikipedia.org/?curid={p['pageid']}",
+            url=p.get("fullurl") or f"https://en.wikipedia.org/?curid={p['pageid']}",
             domain="en.wikipedia.org",
             credibility=reliability("en.wikipedia.org"),
-            meta={"source": "wikipedia"},
+            meta={"source": "wikipedia", "topic": p.get("title", ""),
+                  "image": (p.get("thumbnail") or {}).get("source")},
         )
         for p in sorted(pages, key=lambda p: p.get("index", 99))
         if p.get("extract")
@@ -181,7 +183,12 @@ async def gdelt(client: Any, query: str, n: int = 10) -> list[Document]:
 
 # --- entry point --------------------------------------------------------------
 
-async def gather(claims: list[str], article: str) -> tuple[list[Document], dict[str, str]]:
+async def _none() -> list[Document]:
+    return []
+
+
+async def gather(claims: list[str], article: str, *, include_news: bool = True,
+                 ) -> tuple[list[Document], dict[str, str]]:
     """
     Evidence for a set of claims: Wikipedia per claim, GDELT once for the
     article. Returns the documents and a per-source status for the response.
@@ -201,7 +208,7 @@ async def gather(claims: list[str], article: str) -> tuple[list[Document], dict[
         wiki_q = [search_terms(c) for c in claims if search_terms(c)]
         tasks = [wikipedia(client, q) for q in dict.fromkeys(wiki_q)]
         news_q = search_terms(article if len(claims) != 1 else claims[0], limit=6)
-        tasks.append(gdelt(client, news_q))
+        tasks.append(gdelt(client, news_q) if include_news else _none())
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
     wiki_ok = wiki_fail = 0
@@ -222,7 +229,8 @@ async def gather(claims: list[str], article: str) -> tuple[list[Document], dict[
         log.warning("gdelt lookup failed: %s", news)
         status["gdelt"] = "unavailable"
     else:
-        status["gdelt"] = "ok" if news else "no results or rate-limited"
+        status["gdelt"] = ("ok" if news else "no results or rate-limited") if include_news \
+            else "not needed (web research ran)"
         for d in news:
             if d.id not in seen:
                 seen.add(d.id)

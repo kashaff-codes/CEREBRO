@@ -13,8 +13,9 @@ server schema literally called them "simulated references". Here:
 
   1. the article is segmented into checkable claims (the one legitimate LLM job,
      with a sentence-split fallback when no model is available);
-  2. evidence is gathered from the tenant's corpus, the live web (Wikipedia,
-     GDELT news) and published fact-checks, and gated for relevance;
+  2. evidence is gathered from live web research (Claude's web search, which
+     also normalises messy input into clean claims and quotes its sources),
+     Wikipedia, the tenant's corpus and published fact-checks;
   3. each passage's stance toward each claim is judged (an LLM reading the
      passage, the NLI model, or the lexical fallback);
   4. the credibility score is a weighted mean of named components, returned
@@ -32,6 +33,7 @@ import asyncio
 import logging
 import os
 import re
+from typing import Literal
 
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field, field_validator
@@ -40,8 +42,9 @@ from services.api.core.config import settings
 from services.api.core.db import db, emit_detection
 from services.api.core.deps import Principal, current_principal
 from services.ml.rag.retrieval import Document
-from services.ml.rag import llm_stance, web_evidence
-from services.ml.rag.verify import ClaimVerdict, Label, build_default_verifier
+from services.ml.rag import llm_stance, web_evidence, web_research
+from services.ml.rag.retrieval import ScoredDocument
+from services.ml.rag.verify import ClaimVerdict, Label, build_default_verifier, relevance
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/analyze", tags=["news"])
@@ -50,7 +53,9 @@ MAX_TEXT_BYTES = 100 * 1024
 
 
 class NewsAnalyzeRequest(BaseModel):
-    text: str = Field(..., description="Article text, headline, or statement to verify.")
+    text: str = Field(..., description="Article text, headline, questions, or statement to verify.")
+    depth: Literal["standard", "deep"] = Field(
+        "standard", description="'deep' searches more widely and returns more coverage.")
 
     @field_validator("text")
     @classmethod
@@ -80,6 +85,8 @@ class NewsAnalyzeResponse(BaseModel):
     breakdown: list[dict] = []
     claims: list[dict] = []
     evidence_sources: dict[str, str] = {}
+    related: list[dict[str, str]] = []
+    depth: str = "standard"
 
 
 async def _load_corpus(tenant_id: str) -> list[Document]:
@@ -480,37 +487,111 @@ async def _claims(request: Request, text: str) -> list[tuple[str, float]]:
     return rows[:MAX_CLAIMS] or [(text.strip()[:500], 1.0)]
 
 
-@router.post("/news", response_model=NewsAnalyzeResponse, summary="Verify claims in text against retrieved evidence")
+def _host(url: str | None) -> str | None:
+    from urllib.parse import urlparse
+    try:
+        h = urlparse(url or "").hostname
+    except ValueError:
+        return None
+    return h.removeprefix("www.") if h else None
+
+
+def _cited_hits(rc: web_research.ClaimResearch) -> list[ScoredDocument]:
+    """The passages the research step quoted for this claim, as evidence."""
+    hits: list[ScoredDocument] = []
+    per_url: dict[str, int] = {}
+    seen: set[tuple[str, str]] = set()
+    for i, c in enumerate(rc.citations):
+        key = (c.url, c.quote[:80])
+        if not c.quote or key in seen or per_url.get(c.url, 0) >= 2:
+            continue
+        seen.add(key)
+        per_url[c.url] = per_url.get(c.url, 0) + 1
+        host = _host(c.url)
+        hits.append(ScoredDocument(
+            document=Document(
+                id=f"cite:{i}:{c.url[:120]}", title=c.title or (host or "source"),
+                text=c.quote, url=c.url, domain=host,
+                credibility=web_evidence.reliability(host),
+                meta={"source": "web_search"},
+            ),
+            score=1.0,
+        ))
+    return hits[:6]
+
+
+def _topics(claim: str, docs: list[Document]) -> list[dict]:
+    """Encyclopedia cards for a claim: what the reader can explore, with a picture."""
+    out = []
+    for d in docs:
+        if d.meta.get("source") != "wikipedia":
+            continue
+        topic = d.meta.get("topic") or d.title
+        if relevance(claim, f"{topic} {d.text[:600]}") < 0.2:
+            continue
+        out.append({"title": topic, "url": d.url, "image": d.meta.get("image"),
+                    "summary": d.text[:260]})
+        if len(out) == 3:
+            break
+    return out
+
+
+@router.post("/news", response_model=NewsAnalyzeResponse, summary="Research and verify the claims in a text")
 async def analyze_news(
     req: NewsAnalyzeRequest,
     request: Request,
     principal: Principal = Depends(current_principal),
 ) -> NewsAnalyzeResponse:
     llm = request.app.state.llm
-    claims = await _claims(request, req.text)
-    texts = [c for c, _ in claims]
 
-    # Evidence: the tenant corpus, the live web, and published fact-checks, at once.
-    corpus, web, fc = await asyncio.gather(
+    # 1. Research (normalise the input into claims, search the live web, cite),
+    #    alongside the tenant corpus and published fact-checks.
+    rs, corpus, fc = await asyncio.gather(
+        web_research.research(req.text, depth=req.depth, max_claims=MAX_CLAIMS),
         _load_corpus(principal.tenant_id),
-        web_evidence.gather(texts, req.text),
         _fact_check(req.text),
         return_exceptions=True,
     )
     if isinstance(corpus, BaseException):
         raise corpus
-    web_docs, source_status = ([], {"web": "unavailable"}) if isinstance(web, BaseException) else web
+    if isinstance(rs, BaseException):
+        rs = None
     if isinstance(fc, BaseException):
         fc = None
+
+    researched = list(rs.claims) if rs and rs.claims else []
+    if researched:
+        claims = [(c.claim, 1.0) for c in researched]
+    else:
+        claims = await _claims(request, req.text)
+    texts = [c for c, _ in claims]
+
+    # 2. Encyclopedia background for the cleaned-up claims (and news headlines
+    #    when the research step was not available to find coverage itself).
+    try:
+        web_docs, source_status = await web_evidence.gather(
+            texts, req.text, include_news=not researched)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("web evidence failed: %s", exc)
+        web_docs, source_status = [], {"web": "unavailable"}
+    source_status["web_search"] = (
+        f"{rs.searches} searches" if rs else
+        ("unavailable" if web_research.available() else "not configured"))
     source_status["corpus"] = f"{len(corpus)} documents"
     source_status["fact_check"] = "ok" if fc else (
         "no published checks" if settings.fact_check_api_key else "not configured")
 
     verifier = build_default_verifier(list(corpus) + list(web_docs), prefer_transformers=True)
-    hits = [verifier.candidates(t) for t in texts]
+    by_claim = {c.claim: c for c in researched}
+    hits: list[list[ScoredDocument]] = []
+    for t in texts:
+        cited = _cited_hits(by_claim[t]) if t in by_claim else []
+        urls = {h.document.url for h in cited}
+        extra = [h for h in verifier.candidates(t) if h.document.url not in urls]
+        hits.append((cited + extra)[:8])
 
-    # Stance: an LLM reading each passage when one answers; otherwise the NLI
-    # model when installed, or the lexical fallback. Same arithmetic after.
+    # 3. Stance: an LLM reading each passage when one answers; otherwise the NLI
+    #    model when installed, or the lexical fallback. Same arithmetic after.
     judged = await asyncio.gather(*(llm_stance.judge(llm, t, h) for t, h in zip(texts, hits)))
     verdicts: list[ClaimVerdict] = []
     for t, h, j in zip(texts, hits, judged):
@@ -541,17 +622,18 @@ async def analyze_news(
     summary = (summary[:280] + "…") if len(summary) > 280 else summary
 
     # Analyst-facing "why". The verdict and score above are already final — this
-    # only narrates them in plain language, which is the one thing the LLM is
-    # allowed to do here. Best-effort: any failure leaves `reasoning` exactly as
-    # the deterministic path produced it.
+    # only narrates them in plain language. Best-effort.
     reasoning = await _narrate(request, reasoning, verdict, score, score_source, verdicts)
 
     model_versions: dict[str, str] = {}
     for v in verdicts:
         model_versions.update(v.model_versions)
+    if rs:
+        model_versions["research"] = f"web_search:{rs.model}"
 
     claim_rows = []
     for (text, worth), v in zip(claims, verdicts):
+        rc = by_claim.get(text)
         claim_rows.append({
             "text": text,
             "check_worthy": round(worth, 2),
@@ -560,10 +642,13 @@ async def analyze_news(
             "certainty": round(v.certainty, 3),
             "support": round(v.support_weight, 3),
             "refute": round(v.refute_weight, 3),
+            "finding": rc.finding if rc else "",
+            "explore": rc.explore if rc else [],
+            "topics": _topics(text, list(web_docs)),
             "evidence": [
                 {"title": e.title, "url": e.url, "domain": e.domain,
                  "stance": e.stance.value, "confidence": round(e.nli_score, 3),
-                 "reliability": round(e.credibility, 2), "snippet": e.snippet[:220]}
+                 "reliability": round(e.credibility, 2), "snippet": e.snippet[:280]}
                 for e in v.evidence
             ],
         })
@@ -592,4 +677,6 @@ async def analyze_news(
         breakdown=result["breakdown"],
         claims=claim_rows,
         evidence_sources=source_status,
+        related=(rs.related if rs else []),
+        depth=req.depth,
     )

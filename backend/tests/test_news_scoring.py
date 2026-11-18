@@ -25,6 +25,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 os.environ["WEB_EVIDENCE"] = "0"  # never reach the network from the test suite
+os.environ["WEB_RESEARCH"] = "0"
 
 from services.api.routers.news import _compose  # noqa: E402
 from services.ml.rag import llm_stance  # noqa: E402
