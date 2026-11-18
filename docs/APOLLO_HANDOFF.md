@@ -30,7 +30,7 @@ full context.*
 | **Live app** | https://cerebro-sandy-beta.vercel.app |
 | **Backend API + docs** | https://cerebro-api-nmah.onrender.com/docs |
 | **Health / readiness** | `/health` · `/ready` on the API host |
-| **GitHub repo (source of truth)** | https://github.com/kashaffatimajaffrey-design/CEREBRO |
+| **GitHub repo (source of truth)** | https://github.com/kashaff-codes/CEREBRO |
 | **Demo login** | `demo@cerebro.app` / `cerebro-demo-2026` (or SIGN_UP) |
 | **Frontend host** | Vercel — project `cerebro`, root dir `frontend`, env `VITE_API_BASE` |
 | **Backend host** | Render — service `cerebro-api` (Docker), blueprint `render.yaml` |

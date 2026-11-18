@@ -18,10 +18,20 @@ It's built to be the **data & feature layer** for a larger predictive system
 | **App** | **https://cerebro-sandy-beta.vercel.app** |
 | **API docs** | https://cerebro-api-nmah.onrender.com/docs |
 | **Demo login** | `demo@cerebro.app` / `cerebro-demo-2026` (or use **SIGN_UP**) |
+| **Monitoring** | https://apollo-m-monitoring.onrender.com — Grafana, read-only, no login (shared with APOLLO-M) |
 
 > The backend runs on a free tier that sleeps after ~15 min idle, so the first
 > request after a quiet spell takes ~50 s to wake up, then it's fast. Works on
 > desktop and mobile (iOS/Android).
+
+> **Database status (November 2026).** The Render free-tier PostgreSQL was
+> deleted when its free period ended. CEREBRO keeps working without it: the
+> email, news and network analysers run, news retrieves from the curated seed
+> corpus in memory, and the demo account signs in ("Demo (offline mode)").
+> History, dashboard metrics and new accounts return 503 with an explanation,
+> and the dashboard says so. To bring them back:
+> [`docs/RESTORE_DATABASE.md`](docs/RESTORE_DATABASE.md) — three environment
+> variables on Render.
 
 **Stack:** React 19 + Vite (Vercel) · FastAPI (Render) · Postgres 16 + pgvector
 (Render). Frontend and API are separate services talking over HTTPS + WebSocket.
@@ -48,7 +58,8 @@ that already exist.
 | **Misinformation** | True / false / unverifiable | **Google Fact Check Tools API** returns real fact-checks (Full Fact, FactCheck.org, PolitiFact…) with ratings + **clickable source links**. Falls back to a hybrid-RAG check, then a transparent linguistic heuristic when nothing is found. |
 | **Network anomaly** | Intrusions / attacks | Transparent rule-based triage (SYN floods, oversized packets, ICMP floods, scan sources) on labeled sample traffic. A real unsupervised model (IsolationForest + autoencoder, trainable on CIC-IDS2017) loads in when registered. |
 | **Dashboard** | Live metrics | Real counts over the `detections` table, event-driven via Postgres `NOTIFY` → WebSocket. |
-| **Auth** | Multi-tenant | scrypt + stdlib JWT (rejects `alg=none`), AES-GCM-encrypted OAuth tokens, row-level security in the database, Bearer-token sessions that work on iOS Safari. |
+| **Auth** | Multi-tenant | scrypt + stdlib JWT (rejects `alg=none`), AES-GCM-encrypted OAuth tokens, row-level security in the database, Bearer-token sessions that work on iOS Safari. With no database, only the published demo account can sign in (constant-time check; `OFFLINE_DEMO_LOGIN=false` disables it). |
+| **Monitoring** | Prometheus | `GET /metrics`: database up, models loaded, LLM chain, request counts and latency per route — scraped with APOLLO-M's by [apollo-m/monitoring/hosted](https://github.com/kashaff-codes/apollo-m/tree/main/monitoring/hosted). |
 
 Every verdict carries a `score_source` (`heuristic` / `model` / `fact_check` /
 `rag_evidence`) so it's never mistaken for more certainty than it has.
@@ -93,7 +104,7 @@ predictive core consumes — a clean, defensible module boundary.
 Everything runs in Docker on a laptop — no accounts, no keys required.
 
 ```bash
-git clone https://github.com/kashaffatimajaffrey-design/CEREBRO.git
+git clone https://github.com/kashaff-codes/CEREBRO.git
 cd CEREBRO
 docker compose up -d          # Postgres + pgvector, Redis, API (seeds a demo login)
 cd frontend && npm install && npm run dev
@@ -168,10 +179,13 @@ python tests/test_security.py    # 23 — alg=none, tampering, cross-tenant, AEA
 python tests/test_rag.py         # 17 — retrieval, citations, refuses to guess
 python tests/test_queries.py     #  7 — named-query loader
 python tests/test_anomaly.py     #  9 — fits on benign only (needs scikit-learn)
+pytest tests/test_offline.py     #  9 — the real app with its database gone
 ```
 
-**67 backend tests**, including 23 adversarial security tests, run against
-Postgres 16 + pgvector in CI.
+**76 backend tests**, including 23 adversarial security tests, run against
+Postgres 16 + pgvector in CI. `test_offline` boots the app against a database
+that does not exist: demo-only sign-in, honest 503s, news from the in-memory
+corpus, valid Prometheus output.
 
 ### The frontend gate
 
@@ -207,6 +221,10 @@ The point of the gate is that nothing gets fixed twice:
   a build-time loader test.
 - **Layout could break with everything else green.** Now covered by the visual
   regression baselines.
+- **The hosted database was deleted** and every login and news check answered
+  500. Now covered by `test_offline`, which runs the app with no database.
+- **Clickable `div`s on the sign-in and dashboard screens** could not be
+  reached by keyboard. They are buttons now, and `jsx-a11y` reports nothing.
 
 ---
 
