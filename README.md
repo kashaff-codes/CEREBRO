@@ -54,15 +54,35 @@ that already exist.
 
 | Module | What it does | How it decides |
 |---|---|---|
-| **Email forensics** | Phishing / spoofing | ~35 deterministic signals from the raw RFC 5322 message — SPF/DKIM/DMARC + DKIM alignment, lookalike domains, Unicode homographs, URL tricks. A trained classifier (F1 0.97 on SpamAssassin) can be loaded to replace the heuristic prior. |
+| **Email forensics** | Phishing / spoofing, one message or a whole inbox | ~35 deterministic signals from the raw RFC 5322 message — SPF/DKIM/DMARC + DKIM alignment, lookalike domains, Unicode homographs, URL tricks. **Connect Gmail** (read-only, `gmail.readonly`) and the last 25–100 messages are scored: verdict counts, SPF/DKIM/DMARC pass rates, most common warnings, top senders, each message expandable to its signals. Tokens are exchanged server-side, AES-GCM-encrypted and bound to the user, refreshed when they expire and revoked at Google on disconnect. A trained classifier (F1 0.97 on SpamAssassin) can replace the heuristic prior. |
 | **Misinformation** | True / false / unverifiable, for anything pasted in: a headline, a Reddit paragraph, several questions at once, typos and all | **Research**: Claude with web search restates the input as clean claims (fixing spelling, resolving names, turning questions into the statement asked about), searches the live web, and writes a cited finding per claim, including the correction when a claim is wrong. **Evidence**: the quoted passages it cited, plus Wikipedia (with images) and the curated corpus, each judged supports / refutes / unrelated from its own text. **Score**: a weighted mean of named components (evidence agreement, published fact-checks, language signals, an uncertainty prior) returned with the result, so every point can be traced to a passage with a URL. *Dig deeper* searches more widely. |
-| **Network anomaly** | Intrusions / attacks | Transparent rule-based triage (SYN floods, oversized packets, ICMP floods, scan sources) on labeled sample traffic. A real unsupervised model (IsolationForest + autoencoder, trainable on CIC-IDS2017) loads in when registered. |
+| **Network watch** | Intrusions / attacks in your own logs | Upload a Zeek `conn.log` (TSV or JSON), a CICFlowMeter CSV or a plain flow CSV. Two detectors trained on **CIC-IDS2017** (2.83 M labelled flows): an **Isolation Forest** that learned only Monday's normal traffic, and a **Random Forest** over eight attack families. Every public address is checked against live feeds (abuse.ch Feodo Tracker, Spamhaus DROP, Tor exits). A replay of 351 held-out labelled flows shows the true answer beside each verdict. Measured accuracy below. |
 | **Dashboard** | Live metrics | Real counts over the `detections` table, event-driven via Postgres `NOTIFY` → WebSocket. |
 | **Auth** | Multi-tenant | scrypt + stdlib JWT (rejects `alg=none`), AES-GCM-encrypted OAuth tokens, row-level security in the database, Bearer-token sessions that work on iOS Safari. With no database, only the published demo account can sign in (constant-time check; `OFFLINE_DEMO_LOGIN=false` disables it). |
 | **Monitoring** | Prometheus | `GET /metrics`: database up, models loaded, LLM chain, request counts and latency per route — scraped with APOLLO-M's by [apollo-m/monitoring/hosted](https://github.com/kashaff-codes/apollo-m/tree/main/monitoring/hosted). |
 
 Every verdict carries a `score_source` and a `breakdown` of what the score was
 built from, so it's never mistaken for more certainty than it has.
+
+### How accurate are the network detectors? (measured, not claimed)
+
+Trained by `backend/scripts/train_network_detector.py` on the eight
+MachineLearningCVE CSVs (2,830,628 flows, Monday–Friday). The models ship as
+numpy arrays in `backend/models/network/` (2.2 MB) and score identically to
+scikit-learn (max difference < 1e-15, checked at training time and in CI).
+
+| Detector | Test | Attacks caught | Alerts that were real | Normal flows flagged |
+|---|---|---|---|---|
+| Isolation Forest, 5% false-alarm budget (shipped) | Tue–Fri, 957 k flows | 24.1% | 84.7% | 6.1% |
+| Isolation Forest, 20% budget | same | 89.1% | 85.0% | 22.0% |
+| Random Forest | random 30% hold-out | 99.7% | 90.4% | 3.6% |
+| Random Forest | **train Mon–Wed, test Thu–Fri** | **30.9%** | 94.9% | 1.0% |
+
+The last row is the one that matters for a buyer: against days and attack
+types it never saw, the classifier catches under a third. That is why the
+unsupervised detector runs beside it and why known-bad addresses come from
+live feeds rather than a model. Per-family recall and the full operating curve
+are served at `GET /v1/network/model` and drawn on the page.
 
 ### How accurate is the news verifier? (measured, not claimed)
 
@@ -182,9 +202,11 @@ See [`infra/DEPLOY.md`](infra/DEPLOY.md). The live instance uses **Render**
 ```
 frontend/     React 19 + Vite SPA — dashboard, scanners, auth, live threat-map UI
 backend/
-  services/api/     FastAPI: routers (auth, email, news, network, metrics, flows,
+  services/api/     FastAPI: routers (auth, email, gmail, news, netwatch, metrics,
                     stream, forecast), core (db/asyncpg, queries, security, deps)
-  services/ml/      email forensics · RAG verify · anomaly detector · TFT · LLM providers
+  services/ml/      email forensics · RAG verify · network (features, numpy forests,
+                    threat feeds) · TFT · LLM providers
+  models/network/   shipped detectors (npz), model card, held-out replay sample
   db/               schema_portable.sql · queries.sql
   scripts/          dataset fetch, model training, backtest
 docs/         ARCHITECTURE · STATUS · OVERVIEW · FRONTEND_MIGRATION
@@ -200,8 +222,15 @@ Stating these is what makes the rest credible.
 
 - **Automated ingestion** (RSS/IMAP/Zeek workers) isn't built — data currently
   enters through the API. This is the next step to a self-feeding pipeline.
-- **Trained classifiers** ship as scripts, not loaded in the live instance
-  (email/anomaly run on the heuristic + rule-based paths until a model is set).
+- **Network watch** scores uploaded logs; it does not sit on a live tap. A
+  Zeek sensor shipping `conn.log` on a schedule is the next step. Its classifier
+  generalises poorly to unseen attack days (30.9% recall, table above).
+- **Gmail** uses a restricted scope. Until Google verifies the app (which for
+  `gmail.readonly` includes a third-party security assessment), only test users
+  listed on the consent screen can connect, and Google expires their refresh
+  tokens after 7 days, so they reconnect weekly.
+- **The email classifier** ships as a script; the live instance scores mail with
+  the deterministic rule engine.
 - **TFT forecasting** is scaffolded and validated on real data (see
   [`docs/STATUS.md`](docs/STATUS.md)) but needs ~2 weeks of accumulated
   `detections` history before it produces production forecasts.
@@ -222,9 +251,10 @@ python tests/test_rag.py         # 17 — retrieval, citations, refuses to guess
 python tests/test_queries.py     #  7 — named-query loader
 python tests/test_anomaly.py     #  9 — fits on benign only (needs scikit-learn)
 pytest tests/test_offline.py     #  9 — the real app with its database gone
+pytest tests/test_network.py     # 14 — numpy = sklearn, Zeek/CIC parsing, feeds, Gmail scan + OAuth state
 ```
 
-**76 backend tests**, including 23 adversarial security tests, run against
+**117 backend tests**, including 23 adversarial security tests, run against
 Postgres 16 + pgvector in CI. `test_offline` boots the app against a database
 that does not exist: demo-only sign-in, honest 503s, news from the in-memory
 corpus, valid Prometheus output.
