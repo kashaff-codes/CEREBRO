@@ -71,7 +71,13 @@ export const Auth: React.FC = () => {
             'radial-gradient(ellipse at center, transparent 0%, transparent 22%, black 62%)',
         }}
       >
-        <DossierMap className="h-full w-full" labels={false} opacity={0.9} />
+        <DossierMap
+          className="h-full w-full"
+          labels={false}
+          arcs={false}
+          markers={false}
+          opacity={0.9}
+        />
       </div>
       {/* Concentric rings: the barrel-sight motif, drawn once, very quietly. */}
       <svg

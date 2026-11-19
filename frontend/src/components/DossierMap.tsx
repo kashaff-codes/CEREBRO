@@ -70,7 +70,16 @@ export const DossierMap: React.FC<{
   opacity?: number;
   /** 'slice' fills a background (crops); 'meet' shows the whole map (panels). */
   fit?: 'slice' | 'meet';
-}> = ({ className = '', labels = true, arcs = true, opacity = 1, fit = 'slice' }) => {
+  /** Source markers and the desk reticle; off for a pure background. */
+  markers?: boolean;
+}> = ({
+  className = '',
+  labels = true,
+  arcs = true,
+  opacity = 1,
+  fit = 'slice',
+  markers = true,
+}) => {
   const land = useMemo(() => {
     let d = '';
     for (const p of LAND_DOTS.split(';')) {
@@ -158,62 +167,66 @@ export const DossierMap: React.FC<{
           );
         })}
 
-      {/* sources */}
-      {SOURCES.map((s) => {
-        const sx = x(s.lon);
-        const sy = y(s.lat);
-        const delay = `${((sx + 140) / (W + 140)) * SWEEP_S}s`;
-        return (
-          <g key={s.city}>
-            <circle
-              cx={sx}
-              cy={sy}
-              r="5"
-              fill="none"
-              stroke="#C9A45C"
-              className="dm-ping"
-              style={{ animationDelay: delay }}
-            />
-            <circle cx={sx} cy={sy} r="2.2" fill="#C9A45C" />
-            <circle
-              cx={sx}
-              cy={sy}
-              r="5.5"
-              fill="none"
-              stroke="rgba(201,164,92,0.45)"
-              strokeWidth="0.7"
-            />
-            {labels && (
-              <text
-                x={sx + s.lx}
-                y={sy + s.ly}
-                textAnchor={s.end ? 'end' : 'start'}
-                fill="rgba(236,230,217,0.6)"
-                fontSize="7.5"
-                fontFamily="'IBM Plex Mono', monospace"
-                letterSpacing="0.6"
-              >
-                {s.city.toUpperCase()}
-                <tspan x={sx + s.lx} dy="9" fill="rgba(201,164,92,0.75)">
-                  {s.name}
-                </tspan>
-                <tspan x={sx + s.lx} dy="9" fill="rgba(236,230,217,0.35)">
-                  {fmt(s.lat, 'N', 'S')} {fmt(s.lon, 'E', 'W')}
-                </tspan>
-              </text>
-            )}
-          </g>
-        );
-      })}
+      {markers && (
+        <>
+          {/* sources */}
+          {SOURCES.map((s) => {
+            const sx = x(s.lon);
+            const sy = y(s.lat);
+            const delay = `${((sx + 140) / (W + 140)) * SWEEP_S}s`;
+            return (
+              <g key={s.city}>
+                <circle
+                  cx={sx}
+                  cy={sy}
+                  r="5"
+                  fill="none"
+                  stroke="#C9A45C"
+                  className="dm-ping"
+                  style={{ animationDelay: delay }}
+                />
+                <circle cx={sx} cy={sy} r="2.2" fill="#C9A45C" />
+                <circle
+                  cx={sx}
+                  cy={sy}
+                  r="5.5"
+                  fill="none"
+                  stroke="rgba(201,164,92,0.45)"
+                  strokeWidth="0.7"
+                />
+                {labels && (
+                  <text
+                    x={sx + s.lx}
+                    y={sy + s.ly}
+                    textAnchor={s.end ? 'end' : 'start'}
+                    fill="rgba(236,230,217,0.6)"
+                    fontSize="7.5"
+                    fontFamily="'IBM Plex Mono', monospace"
+                    letterSpacing="0.6"
+                  >
+                    {s.city.toUpperCase()}
+                    <tspan x={sx + s.lx} dy="9" fill="rgba(201,164,92,0.75)">
+                      {s.name}
+                    </tspan>
+                    <tspan x={sx + s.lx} dy="9" fill="rgba(236,230,217,0.35)">
+                      {fmt(s.lat, 'N', 'S')} {fmt(s.lon, 'E', 'W')}
+                    </tspan>
+                  </text>
+                )}
+              </g>
+            );
+          })}
 
-      {/* the desk: a reticle */}
-      <g stroke="#ECE6D9" strokeWidth="0.8" fill="none" opacity="0.75">
-        <circle cx={desk.x} cy={desk.y} r="11" />
-        <line x1={desk.x - 18} x2={desk.x - 6} y1={desk.y} y2={desk.y} />
-        <line x1={desk.x + 6} x2={desk.x + 18} y1={desk.y} y2={desk.y} />
-        <line x1={desk.x} x2={desk.x} y1={desk.y - 18} y2={desk.y - 6} />
-        <line x1={desk.x} x2={desk.x} y1={desk.y + 6} y2={desk.y + 18} />
-      </g>
+          {/* the desk: a reticle */}
+          <g stroke="#ECE6D9" strokeWidth="0.8" fill="none" opacity="0.75">
+            <circle cx={desk.x} cy={desk.y} r="11" />
+            <line x1={desk.x - 18} x2={desk.x - 6} y1={desk.y} y2={desk.y} />
+            <line x1={desk.x + 6} x2={desk.x + 18} y1={desk.y} y2={desk.y} />
+            <line x1={desk.x} x2={desk.x} y1={desk.y - 18} y2={desk.y - 6} />
+            <line x1={desk.x} x2={desk.x} y1={desk.y + 6} y2={desk.y + 18} />
+          </g>
+        </>
+      )}
 
       {/* the sweep */}
       <g className="dm-sweep">
