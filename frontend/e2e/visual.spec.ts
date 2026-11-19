@@ -17,6 +17,9 @@ import { test, expect, type Page } from '@playwright/test';
  *    because the canvas covers the whole viewport, masking paints the entire
  *    page a flat colour and the assertion silently stops testing anything.
  *    `visibility: hidden` removes the moving pixels and keeps the layout.
+ *  - The sign-in map sweeps continuously and the form animates in on every tab
+ *    switch. Tests request prefers-reduced-motion, which index.css honours by
+ *    collapsing every animation to its end state (as it does for real users).
  *  - Framer Motion entrance transitions mean the page keeps moving after load.
  *    `animations: 'disabled'` (set in playwright.config.ts) finishes them
  *    instantly and holds them at their end state.
@@ -39,6 +42,10 @@ test.describe('visual regression', () => {
 
   /** Settle the page: canvas stilled, fonts loaded, entrance animations done. */
   async function ready(page: Page) {
+    // The sign-in map sweeps forever and the form rises in on every tab switch.
+    // Under reduced motion index.css collapses every animation to its end state,
+    // so two captures of the same page are identical whatever the timing.
+    await page.emulateMedia({ reducedMotion: 'reduce' });
     await page.goto('/');
     await page.addStyleTag({ content: 'canvas { visibility: hidden !important; }' });
     await page.evaluate(() => document.fonts.ready);
