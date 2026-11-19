@@ -1,0 +1,644 @@
+{
+  "summary": {
+    "n": 36,
+    "accuracy": 0.972,
+    "by_label": {
+      "TRUE": {
+        "n": 15,
+        "accuracy": 0.933,
+        "mean_score": 73.3
+      },
+      "FALSE": {
+        "n": 18,
+        "accuracy": 1.0,
+        "mean_score": 28.4
+      },
+      "UNVERIFIABLE": {
+        "n": 3,
+        "accuracy": 1.0,
+        "mean_score": 55.0
+      }
+    },
+    "auc_true_vs_false": 1.0,
+    "said_unverified_on_true_or_false": 1,
+    "median_seconds": 11.4,
+    "cost_usd": 3.42,
+    "model": "claude-opus-5-5",
+    "when": "2026-11-19 01:19 UTC"
+  },
+  "rows": [
+    {
+      "id": "t01",
+      "text": "Mount Everest is the highest mountain above sea level on Earth.",
+      "label": "TRUE",
+      "status": 200,
+      "score": 66,
+      "verdict": "Credible",
+      "confidence": "Medium",
+      "correct": true,
+      "claims": [
+        "Mount Everest is the highest mountain above sea level on Earth."
+      ],
+      "web_search": "1 searches",
+      "passages": 7,
+      "seconds": 11.3,
+      "cost_usd": 0.0831
+    },
+    {
+      "id": "t02",
+      "text": "Pakistan won the 1992 Cricket World Cup.",
+      "label": "TRUE",
+      "status": 200,
+      "score": 70,
+      "verdict": "Credible",
+      "confidence": "Medium",
+      "correct": true,
+      "claims": [
+        "Pakistan won the 1992 Cricket World Cup."
+      ],
+      "web_search": "1 searches",
+      "passages": 7,
+      "seconds": 9.6,
+      "cost_usd": 0.0803
+    },
+    {
+      "id": "t03",
+      "text": "Neil Armstrong was the first person to walk on the Moon.",
+      "label": "TRUE",
+      "status": 200,
+      "score": 77,
+      "verdict": "Credible",
+      "confidence": "High",
+      "correct": true,
+      "claims": [
+        "Neil Armstrong was the first person to walk on the Moon."
+      ],
+      "web_search": "1 searches",
+      "passages": 8,
+      "seconds": 11.5,
+      "cost_usd": 0.0855
+    },
+    {
+      "id": "t04",
+      "text": "The Berlin Wall fell in 1989.",
+      "label": "TRUE",
+      "status": 200,
+      "score": 79,
+      "verdict": "Credible",
+      "confidence": "High",
+      "correct": true,
+      "claims": [
+        "The Berlin Wall fell in 1989."
+      ],
+      "web_search": "1 searches",
+      "passages": 7,
+      "seconds": 10.4,
+      "cost_usd": 0.0801
+    },
+    {
+      "id": "t05",
+      "text": "Marie Curie won Nobel Prizes in both physics and chemistry.",
+      "label": "TRUE",
+      "status": 200,
+      "score": 67,
+      "verdict": "Credible",
+      "confidence": "Medium",
+      "correct": true,
+      "claims": [
+        "Marie Curie won Nobel Prizes in both physics and chemistry."
+      ],
+      "web_search": "1 searches",
+      "passages": 6,
+      "seconds": 11.7,
+      "cost_usd": 0.0894
+    },
+    {
+      "id": "t06",
+      "text": "The Eiffel Tower is in Paris.",
+      "label": "TRUE",
+      "status": 200,
+      "score": 73,
+      "verdict": "Credible",
+      "confidence": "Medium",
+      "correct": true,
+      "claims": [
+        "The Eiffel Tower is in Paris, France."
+      ],
+      "web_search": "1 searches",
+      "passages": 7,
+      "seconds": 10.5,
+      "cost_usd": 0.0841
+    },
+    {
+      "id": "t07",
+      "text": "Canberra is the capital of Australia.",
+      "label": "TRUE",
+      "status": 200,
+      "score": 74,
+      "verdict": "Credible",
+      "confidence": "Medium",
+      "correct": true,
+      "claims": [
+        "Canberra is the capital of Australia."
+      ],
+      "web_search": "1 searches",
+      "passages": 8,
+      "seconds": 11.2,
+      "cost_usd": 0.0849
+    },
+    {
+      "id": "t08",
+      "text": "Insulin was first isolated by Frederick Banting and Charles Best in 1921.",
+      "label": "TRUE",
+      "status": 200,
+      "score": 72,
+      "verdict": "Credible",
+      "confidence": "Medium",
+      "correct": true,
+      "claims": [
+        "Frederick Banting and Charles Best first isolated insulin in 1921."
+      ],
+      "web_search": "1 searches",
+      "passages": 7,
+      "seconds": 12.8,
+      "cost_usd": 0.0897
+    },
+    {
+      "id": "t09",
+      "text": "The Titanic sank in 1912 after hitting an iceberg.",
+      "label": "TRUE",
+      "status": 200,
+      "score": 77,
+      "verdict": "Credible",
+      "confidence": "High",
+      "correct": true,
+      "claims": [
+        "RMS Titanic sank in 1912 after hitting an iceberg."
+      ],
+      "web_search": "1 searches",
+      "passages": 7,
+      "seconds": 10.1,
+      "cost_usd": 0.0841
+    },
+    {
+      "id": "t10",
+      "text": "The human heart has four chambers.",
+      "label": "TRUE",
+      "status": 200,
+      "score": 73,
+      "verdict": "Credible",
+      "confidence": "Medium",
+      "correct": true,
+      "claims": [
+        "The human heart has four chambers."
+      ],
+      "web_search": "1 searches",
+      "passages": 8,
+      "seconds": 10.8,
+      "cost_usd": 0.0823
+    },
+    {
+      "id": "t11",
+      "text": "Nelson Mandela became president of South Africa in 1994.",
+      "label": "TRUE",
+      "status": 200,
+      "score": 79,
+      "verdict": "Credible",
+      "confidence": "High",
+      "correct": true,
+      "claims": [
+        "Nelson Mandela became president of South Africa in 1994."
+      ],
+      "web_search": "1 searches",
+      "passages": 8,
+      "seconds": 10.7,
+      "cost_usd": 0.0831
+    },
+    {
+      "id": "t12",
+      "text": "Light from the Sun takes about eight minutes to reach Earth.",
+      "label": "TRUE",
+      "status": 200,
+      "score": 65,
+      "verdict": "Unverified",
+      "confidence": "Medium",
+      "correct": false,
+      "claims": [
+        "Light from the Sun takes about eight minutes to reach Earth."
+      ],
+      "web_search": "1 searches",
+      "passages": 5,
+      "seconds": 10.1,
+      "cost_usd": 0.0795
+    },
+    {
+      "id": "t13",
+      "text": "Pluto was reclassified as a dwarf planet in 2006.",
+      "label": "TRUE",
+      "status": 200,
+      "score": 74,
+      "verdict": "Credible",
+      "confidence": "Medium",
+      "correct": true,
+      "claims": [
+        "In 2006 the International Astronomical Union reclassified Pluto as a dwarf planet."
+      ],
+      "web_search": "1 searches",
+      "passages": 8,
+      "seconds": 11.4,
+      "cost_usd": 0.0855
+    },
+    {
+      "id": "t14",
+      "text": "NASA landed astronauts on the Moon in 1969.",
+      "label": "TRUE",
+      "status": 200,
+      "score": 81,
+      "verdict": "Credible",
+      "confidence": "High",
+      "correct": true,
+      "claims": [
+        "NASA landed astronauts on the Moon in 1969."
+      ],
+      "web_search": "1 searches",
+      "passages": 8,
+      "seconds": 11.5,
+      "cost_usd": 0.0853
+    },
+    {
+      "id": "f01",
+      "text": "The Great Wall of China is visible from the Moon with the naked eye.",
+      "label": "FALSE",
+      "status": 200,
+      "score": 25,
+      "verdict": "Fake News",
+      "confidence": "High",
+      "correct": true,
+      "claims": [
+        "You can see the Great Wall of China from the Moon with the naked eye."
+      ],
+      "web_search": "1 searches",
+      "passages": 6,
+      "seconds": 12.1,
+      "cost_usd": 0.0879
+    },
+    {
+      "id": "f02",
+      "text": "Goldfish have a three-second memory.",
+      "label": "FALSE",
+      "status": 200,
+      "score": 31,
+      "verdict": "Misleading",
+      "confidence": "Medium",
+      "correct": true,
+      "claims": [
+        "Goldfish have a memory span of only about three seconds."
+      ],
+      "web_search": "2 searches",
+      "passages": 5,
+      "seconds": 14.2,
+      "cost_usd": 0.1769
+    },
+    {
+      "id": "f03",
+      "text": "Albert Einstein failed mathematics in school.",
+      "label": "FALSE",
+      "status": 200,
+      "score": 29,
+      "verdict": "Fake News",
+      "confidence": "Medium",
+      "correct": true,
+      "claims": [
+        "Albert Einstein failed mathematics in school."
+      ],
+      "web_search": "1 searches",
+      "passages": 8,
+      "seconds": 12.3,
+      "cost_usd": 0.0876
+    },
+    {
+      "id": "f04",
+      "text": "Vaccines cause autism in children.",
+      "label": "FALSE",
+      "status": 200,
+      "score": 30,
+      "verdict": "Fake News",
+      "confidence": "High",
+      "correct": true,
+      "claims": [
+        "Vaccines cause autism in children."
+      ],
+      "web_search": "2 searches",
+      "passages": 8,
+      "seconds": 13.2,
+      "cost_usd": 0.1245
+    },
+    {
+      "id": "f05",
+      "text": "5G mobile networks spread COVID-19.",
+      "label": "FALSE",
+      "status": 200,
+      "score": 26,
+      "verdict": "Fake News",
+      "confidence": "High",
+      "correct": true,
+      "claims": [
+        "5G mobile networks spread COVID-19."
+      ],
+      "web_search": "1 searches",
+      "passages": 8,
+      "seconds": 12.0,
+      "cost_usd": 0.0808
+    },
+    {
+      "id": "f06",
+      "text": "Humans only use 10 percent of their brains.",
+      "label": "FALSE",
+      "status": 200,
+      "score": 28,
+      "verdict": "Fake News",
+      "confidence": "Medium",
+      "correct": true,
+      "claims": [
+        "Humans use only 10 percent of their brains."
+      ],
+      "web_search": "1 searches",
+      "passages": 8,
+      "seconds": 11.2,
+      "cost_usd": 0.0831
+    },
+    {
+      "id": "f07",
+      "text": "The Eiffel Tower is in London.",
+      "label": "FALSE",
+      "status": 200,
+      "score": 29,
+      "verdict": "Fake News",
+      "confidence": "Medium",
+      "correct": true,
+      "claims": [
+        "The Eiffel Tower is in London."
+      ],
+      "web_search": "1 searches",
+      "passages": 8,
+      "seconds": 11.0,
+      "cost_usd": 0.0847
+    },
+    {
+      "id": "f08",
+      "text": "Sydney is the capital of Australia.",
+      "label": "FALSE",
+      "status": 200,
+      "score": 28,
+      "verdict": "Fake News",
+      "confidence": "Medium",
+      "correct": true,
+      "claims": [
+        "Sydney is the capital of Australia."
+      ],
+      "web_search": "1 searches",
+      "passages": 7,
+      "seconds": 11.6,
+      "cost_usd": 0.0811
+    },
+    {
+      "id": "f09",
+      "text": "Lightning never strikes the same place twice.",
+      "label": "FALSE",
+      "status": 200,
+      "score": 28,
+      "verdict": "Fake News",
+      "confidence": "Medium",
+      "correct": true,
+      "claims": [
+        "Lightning never strikes the same place twice."
+      ],
+      "web_search": "1 searches",
+      "passages": 7,
+      "seconds": 11.4,
+      "cost_usd": 0.0883
+    },
+    {
+      "id": "f10",
+      "text": "Bats are blind.",
+      "label": "FALSE",
+      "status": 200,
+      "score": 27,
+      "verdict": "Fake News",
+      "confidence": "Medium",
+      "correct": true,
+      "claims": [
+        "Bats are blind."
+      ],
+      "web_search": "1 searches",
+      "passages": 8,
+      "seconds": 10.4,
+      "cost_usd": 0.0834
+    },
+    {
+      "id": "f11",
+      "text": "Drinking bleach cures COVID-19.",
+      "label": "FALSE",
+      "status": 200,
+      "score": 25,
+      "verdict": "Fake News",
+      "confidence": "High",
+      "correct": true,
+      "claims": [
+        "Drinking bleach cures COVID-19."
+      ],
+      "web_search": "1 searches",
+      "passages": 8,
+      "seconds": 12.5,
+      "cost_usd": 0.0852
+    },
+    {
+      "id": "f12",
+      "text": "The Berlin Wall fell in 1979.",
+      "label": "FALSE",
+      "status": 200,
+      "score": 28,
+      "verdict": "Fake News",
+      "confidence": "High",
+      "correct": true,
+      "claims": [
+        "The Berlin Wall fell in 1979."
+      ],
+      "web_search": "1 searches",
+      "passages": 5,
+      "seconds": 8.9,
+      "cost_usd": 0.0815
+    },
+    {
+      "id": "f13",
+      "text": "Thomas Edison invented the telephone.",
+      "label": "FALSE",
+      "status": 200,
+      "score": 31,
+      "verdict": "Misleading",
+      "confidence": "Medium",
+      "correct": true,
+      "claims": [
+        "Thomas Edison invented the telephone."
+      ],
+      "web_search": "1 searches",
+      "passages": 7,
+      "seconds": 12.8,
+      "cost_usd": 0.0903
+    },
+    {
+      "id": "f14",
+      "text": "Mount Kilimanjaro is the tallest mountain in the world.",
+      "label": "FALSE",
+      "status": 200,
+      "score": 31,
+      "verdict": "Misleading",
+      "confidence": "Medium",
+      "correct": true,
+      "claims": [
+        "Mount Kilimanjaro is the tallest mountain in the world."
+      ],
+      "web_search": "1 searches",
+      "passages": 5,
+      "seconds": 11.6,
+      "cost_usd": 0.0881
+    },
+    {
+      "id": "f15",
+      "text": "The Apollo Moon landings were filmed in a studio.",
+      "label": "FALSE",
+      "status": 200,
+      "score": 23,
+      "verdict": "Fake News",
+      "confidence": "High",
+      "correct": true,
+      "claims": [
+        "The Apollo Moon landings were faked and filmed in a studio, not on the Moon."
+      ],
+      "web_search": "1 searches",
+      "passages": 8,
+      "seconds": 15.0,
+      "cost_usd": 0.091
+    },
+    {
+      "id": "f16",
+      "text": "Napoleon Bonaparte was unusually short, around five feet tall.",
+      "label": "FALSE",
+      "status": 200,
+      "score": 34,
+      "verdict": "Misleading",
+      "confidence": "Medium",
+      "correct": true,
+      "claims": [
+        "Napoleon Bonaparte was unusually short, about five feet tall."
+      ],
+      "web_search": "1 searches",
+      "passages": 5,
+      "seconds": 11.4,
+      "cost_usd": 0.0867
+    },
+    {
+      "id": "u01",
+      "text": "The town council of Quellingham, Ohio replaced its mayor with an AI system in March 2026.",
+      "label": "UNVERIFIABLE",
+      "status": 200,
+      "score": 54,
+      "verdict": "Unverified",
+      "confidence": "Style only",
+      "correct": true,
+      "claims": [
+        "In March 2026, the town council of Quellingham, Ohio, replaced the town's mayor with an AI system."
+      ],
+      "web_search": "3 searches",
+      "passages": 4,
+      "seconds": 14.2,
+      "cost_usd": 0.2118
+    },
+    {
+      "id": "u02",
+      "text": "A study by the Hollowmere Institute found that chess players live 14 years longer than non-players.",
+      "label": "UNVERIFIABLE",
+      "status": 200,
+      "score": 59,
+      "verdict": "Disputed",
+      "confidence": "Low",
+      "correct": true,
+      "claims": [
+        "The Hollowmere Institute published a study on how long chess players live.",
+        "Chess players live 14 years longer than people who don't play."
+      ],
+      "web_search": "2 searches",
+      "passages": 10,
+      "seconds": 15.2,
+      "cost_usd": 0.1278
+    },
+    {
+      "id": "u03",
+      "text": "Zentrax Pharmaceuticals recalled its entire vaccine line last month.",
+      "label": "UNVERIFIABLE",
+      "status": 200,
+      "score": 52,
+      "verdict": "Unverified",
+      "confidence": "Style only",
+      "correct": true,
+      "claims": [
+        "Zentrax Pharmaceuticals recalled its entire vaccine line in October 2026."
+      ],
+      "web_search": "2 searches",
+      "passages": 6,
+      "seconds": 14.7,
+      "cost_usd": 0.1581
+    },
+    {
+      "id": "m01",
+      "text": "eifel tower is in londn",
+      "label": "FALSE",
+      "status": 200,
+      "score": 28,
+      "verdict": "Fake News",
+      "confidence": "Medium",
+      "correct": true,
+      "claims": [
+        "The Eiffel Tower is in London."
+      ],
+      "web_search": "1 searches",
+      "passages": 7,
+      "seconds": 9.5,
+      "cost_usd": 0.0832
+    },
+    {
+      "id": "m02",
+      "text": "did pakistan win the 92 world cup",
+      "label": "TRUE",
+      "status": 200,
+      "score": 72,
+      "verdict": "Credible",
+      "confidence": "Medium",
+      "correct": true,
+      "claims": [
+        "Pakistan won the 1992 Cricket World Cup."
+      ],
+      "web_search": "1 searches",
+      "passages": 7,
+      "seconds": 9.6,
+      "cost_usd": 0.0787
+    },
+    {
+      "id": "m03",
+      "text": "is it true bats are blind",
+      "label": "FALSE",
+      "status": 200,
+      "score": 31,
+      "verdict": "Misleading",
+      "confidence": "Medium",
+      "correct": true,
+      "claims": [
+        "Bats are blind."
+      ],
+      "web_search": "1 searches",
+      "passages": 8,
+      "seconds": 9.4,
+      "cost_usd": 0.0832
+    }
+  ]
+}

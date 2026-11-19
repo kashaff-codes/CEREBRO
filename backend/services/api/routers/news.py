@@ -222,6 +222,9 @@ def _compose(
 
     total = sum(c["weight"] for c in comps if c["score"] is not None)
     score = sum(c["score"] * c["weight"] for c in comps if c["score"] is not None) / total
+    # Decide the verdict on the number the reader sees. Thresholds on the raw
+    # value let 64.6 display as "65" yet fall under the 65 line for Credible.
+    score = float(max(0, min(100, int(round(score)))))
     for c in comps:
         c["share"] = round(c["weight"] / total, 3) if c["score"] is not None else 0.0
 

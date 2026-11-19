@@ -226,3 +226,13 @@ def test_fallback_claim_split_keeps_short_questions_and_drops_lead_ins():
     assert split_sentences("I saw on reddit that the WHO declared a pandemic. Also that "
                            "Pakistan won the 1992 cricket world cup.") == [
         "the WHO declared a pandemic.", "Pakistan won the 1992 cricket world cup."]
+
+
+def test_the_verdict_agrees_with_the_displayed_score():
+    """A score shown as 65 must not carry a verdict computed from 64.6."""
+    for s in [x / 10 for x in range(0, 2001)]:
+        out = _compose([_verdict(s / 100, 0.0)], [1.0], None, "A claim with 2026 figures.")
+        if out["verdict"] == "Credible":
+            assert out["score"] >= 65
+        if out["score"] >= 65 and out["confidence"] >= 0.2:
+            assert out["verdict"] == "Credible", out
