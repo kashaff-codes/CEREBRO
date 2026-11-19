@@ -376,6 +376,22 @@ class CerebrasProvider(OpenAICompatProvider):
         )
 
 
+def anthropic_headers(api_key: str, version: str) -> dict[str, str]:
+    """
+    Request headers for the Anthropic API. A user-scoped key (sk-ant-usr-...)
+    is not tied to one workspace, and every request must name the workspace to
+    bill with `anthropic-workspace-id`, or the API answers 400. Workspace-scoped
+    keys (sk-ant-api03-...) need nothing extra, so the header is sent only when
+    ANTHROPIC_WORKSPACE_ID is set.
+    """
+    headers = {"x-api-key": api_key, "anthropic-version": version,
+               "content-type": "application/json"}
+    workspace = os.getenv("ANTHROPIC_WORKSPACE_ID", "").strip()
+    if workspace:
+        headers["anthropic-workspace-id"] = workspace
+    return headers
+
+
 class AnthropicProvider(LLMProvider):
     """
     Anthropic Claude via the Messages API (raw HTTP, matching the other
@@ -440,11 +456,7 @@ class AnthropicProvider(LLMProvider):
                 resp = await client.post(
                     self._ENDPOINT,
                     json=body,
-                    headers={
-                        "x-api-key": self.api_key,
-                        "anthropic-version": self._VERSION,
-                        "content-type": "application/json",
-                    },
+                    headers=anthropic_headers(self.api_key, self._VERSION),
                 )
                 resp.raise_for_status()
                 data = resp.json()

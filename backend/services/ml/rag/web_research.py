@@ -119,8 +119,8 @@ async def research(text: str, *, depth: str = "standard", max_claims: int = 5,
         "tools": tools,
         "messages": messages,
     }
-    headers = {"x-api-key": os.environ["ANTHROPIC_API_KEY"],
-               "anthropic-version": VERSION, "content-type": "application/json"}
+    from services.ml.providers.llm import anthropic_headers
+    headers = anthropic_headers(os.environ["ANTHROPIC_API_KEY"], VERSION)
 
     content: list[dict[str, Any]] = []
     try:

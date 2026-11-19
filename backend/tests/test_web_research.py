@@ -126,3 +126,12 @@ def test_the_route_uses_researched_claims_and_quotes(monkeypatch):
     assert EIFFEL_URL in body["sources"]
     assert body["related"][0]["url"] == "https://www.toureiffel.paris/en"
     assert body["model_versions"].get("research") == "web_search:stub"
+
+
+def test_workspace_header_only_when_configured(monkeypatch):
+    """User-scoped keys (sk-ant-usr-) must name a workspace; others must not need to."""
+    from services.ml.providers.llm import anthropic_headers
+    monkeypatch.delenv("ANTHROPIC_WORKSPACE_ID", raising=False)
+    assert "anthropic-workspace-id" not in anthropic_headers("k", "2023-06-01")
+    monkeypatch.setenv("ANTHROPIC_WORKSPACE_ID", "wrkspc_test")
+    assert anthropic_headers("k", "2023-06-01")["anthropic-workspace-id"] == "wrkspc_test"
