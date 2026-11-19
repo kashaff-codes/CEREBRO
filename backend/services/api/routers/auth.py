@@ -10,9 +10,12 @@ This is the server-side replacement for two v1 liabilities:
 
 Here credentials are verified server-side against a scrypt hash, the access
 token is a short-lived signed JWT, and it is delivered in an httpOnly cookie so
-page JavaScript can never read it. The refresh token is stored only as a
-SHA-256 hash — the server keeps no material that would let an attacker with read
-access to the sessions table mint a login.
+page JavaScript can never read it. Access tokens live an hour; a refresh token
+(30 days) renews them. Refresh tokens are opaque random strings stored only as a
+SHA-256 hash, so read access to the sessions table cannot mint a login. Each is
+single-use: /refresh revokes it and issues a new one. Presenting a token that
+was already rotated (outside a short multi-tab grace window) is treated as theft
+and signs the user out everywhere.
 
 The Google OAuth *exchange* endpoint is scaffolded with the contract the
 frontend calls, and is explicit that the authorization-code exchange itself is
@@ -45,6 +48,10 @@ log = logging.getLogger(__name__)
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 _COOKIE_NAME = "cerebro_session"
+_REFRESH_COOKIE = "cerebro_refresh"
+# Two tabs that share a refresh token can both try to renew at the same moment;
+# the loser should pick up the winner's tokens, not set off theft detection.
+ROTATION_GRACE_SECONDS = 30
 
 
 class LoginRequest(BaseModel):
@@ -62,6 +69,10 @@ class LoginResponse(BaseModel):
     # ignore this field.
     access_token: str
     token_type: str = "bearer"
+    # Seconds until access_token expires, and the single-use token that renews
+    # it (absent in offline demo mode, where there is no session store).
+    expires_in: int = 0
+    refresh_token: str | None = None
 
 
 def _set_session_cookie(response: Response, token: str) -> None:
@@ -80,6 +91,46 @@ def _set_session_cookie(response: Response, token: str) -> None:
         samesite=samesite,  # type: ignore[arg-type]
         path="/",
     )
+
+
+def _set_refresh_cookie(response: Response, token: str) -> None:
+    samesite = settings.session_cookie_samesite
+    if samesite not in {"lax", "none", "strict"}:
+        samesite = "lax"
+    secure = settings.is_production or samesite == "none"
+    response.set_cookie(_REFRESH_COOKIE, token, max_age=settings.refresh_token_ttl_days * 86400,
+                        httponly=True, secure=secure, samesite=samesite,  # type: ignore[arg-type]
+                        path="/v1/auth")
+
+
+async def _open_session(user_id: Any, request: Request) -> str:
+    """Store a new session (hash only) and return its refresh token."""
+    refresh_token = generate_token()
+    await db.fetch_unscoped(
+        """
+        INSERT INTO cerebro.sessions (user_id, token_hash, user_agent, ip, expires_at)
+        VALUES ($1, $2, $3, $4, $5)
+        """,
+        user_id, hash_token(refresh_token),
+        request.headers.get("user-agent"),
+        request.client.host if request.client else None,
+        session_expiry(settings.refresh_token_ttl_days),
+    )
+    return refresh_token
+
+
+def _issue(response: Response, *, user_id: str, tenant_id: str, role: str, display_name: str | None,
+           refresh_token: str | None) -> "LoginResponse":
+    access_token = create_access_token(
+        user_id=user_id, tenant_id=tenant_id, role=role,
+        secret=settings.secret_key, ttl_minutes=settings.access_token_ttl_minutes,
+    )
+    _set_session_cookie(response, access_token)
+    if refresh_token:
+        _set_refresh_cookie(response, refresh_token)
+    return LoginResponse(user_id=user_id, tenant_id=tenant_id, role=role, display_name=display_name,
+                         access_token=access_token, expires_in=settings.access_token_ttl_minutes * 60,
+                         refresh_token=refresh_token)
 
 
 # Stable identifiers for the offline demo principal, so a token issued while the
@@ -123,7 +174,8 @@ def _offline_demo_login(req: LoginRequest, response: Response) -> LoginResponse:
     )
     _set_session_cookie(response, token)
     return LoginResponse(user_id=OFFLINE_USER_ID, tenant_id=OFFLINE_TENANT_ID, role="owner",
-                         display_name="Demo (offline mode)", access_token=token)
+                         display_name="Demo (offline mode)", access_token=token,
+                         expires_in=settings.access_token_ttl_minutes * 60)
 
 
 @router.post("/login", response_model=LoginResponse)
@@ -155,34 +207,12 @@ async def login(req: LoginRequest, request: Request, response: Response) -> Logi
         )
 
     user_id, tenant_id, role = str(row["id"]), str(row["tenant_id"]), row["role"]
-
-    access_token = create_access_token(
-        user_id=user_id, tenant_id=tenant_id, role=role,
-        secret=settings.secret_key, ttl_minutes=settings.access_token_ttl_minutes,
-    )
-
-    # Persist a hashed refresh/session record. Only the hash is stored.
-    refresh_token = generate_token()
-    await db.fetch_unscoped(
-        """
-        INSERT INTO cerebro.sessions (user_id, token_hash, user_agent, ip, expires_at)
-        VALUES ($1, $2, $3, $4, $5)
-        RETURNING id
-        """,
-        row["id"], hash_token(refresh_token),
-        request.headers.get("user-agent"),
-        request.client.host if request.client else None,
-        session_expiry(),
-    )
+    refresh_token = await _open_session(row["id"], request)
     await db.fetch_unscoped(
         "UPDATE cerebro.users SET last_seen_at = now() WHERE id = $1", row["id"]
     )
-
-    _set_session_cookie(response, access_token)
-    return LoginResponse(
-        user_id=user_id, tenant_id=tenant_id, role=role,
-        display_name=row["display_name"], access_token=access_token,
-    )
+    return _issue(response, user_id=user_id, tenant_id=tenant_id, role=role,
+                  display_name=row["display_name"], refresh_token=refresh_token)
 
 
 class RegisterRequest(BaseModel):
@@ -225,33 +255,80 @@ async def register(req: RegisterRequest, request: Request, response: Response) -
         tenant_id, req.email, req.name, hash_password(req.password),
     )
     user_id = str(user[0]["id"])
+    refresh_token = await _open_session(user_id, request)
+    return _issue(response, user_id=user_id, tenant_id=tenant_id, role="owner",
+                  display_name=req.name, refresh_token=refresh_token)
 
-    access_token = create_access_token(
-        user_id=user_id, tenant_id=tenant_id, role="owner",
-        secret=settings.secret_key, ttl_minutes=settings.access_token_ttl_minutes,
-    )
-    refresh_token = generate_token()
-    await db.fetch_unscoped(
+
+class RefreshRequest(BaseModel):
+    # Optional in the body: a browser that kept the httpOnly cookie sends nothing here.
+    refresh_token: str | None = None
+
+
+def _ended(detail: str = "session ended: sign in again") -> HTTPException:
+    return HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=detail,
+                         headers={"WWW-Authenticate": "Bearer"})
+
+
+@router.post("/refresh", response_model=LoginResponse, summary="Renew the session with a refresh token")
+async def refresh(request: Request, response: Response, body: RefreshRequest | None = None) -> LoginResponse:
+    token = (body.refresh_token if body else None) or request.cookies.get(_REFRESH_COOKIE)
+    if not token:
+        raise _ended()
+    if not db.is_connected:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                            detail="The account database is offline; sign in again.")
+    rows = await db.fetch_unscoped(
         """
-        INSERT INTO cerebro.sessions (user_id, token_hash, user_agent, ip, expires_at)
-        VALUES ($1, $2, $3, $4, $5)
+        SELECT s.id, s.user_id, s.revoked_at,
+               (s.revoked_at > now() - make_interval(secs => $2)) AS recently_revoked,
+               (s.expires_at <= now()) AS expired,
+               u.tenant_id, u.role, u.display_name, u.is_active
+        FROM cerebro.sessions s JOIN cerebro.users u ON u.id = s.user_id
+        WHERE s.token_hash = $1
         """,
-        user_id, hash_token(refresh_token),
-        request.headers.get("user-agent"),
-        request.client.host if request.client else None,
-        session_expiry(),
+        hash_token(token), float(ROTATION_GRACE_SECONDS),
     )
+    row = rows[0] if rows else None
+    if row is None:
+        raise _ended()
+    if row["revoked_at"] is not None:
+        if row["recently_revoked"]:
+            # Another tab renewed with this token a moment ago: not theft.
+            raise _ended("refresh token already rotated")
+        # A rotated token used again later means a copy exists somewhere else.
+        # Revoke every session this user has, so whoever holds it is out too.
+        log.warning("refresh token reuse for user %s: revoking all sessions", row["user_id"])
+        await db.fetch_unscoped(
+            "UPDATE cerebro.sessions SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL",
+            row["user_id"])
+        raise _ended()
+    if row["expired"] or not row["is_active"]:
+        raise _ended()
+    # Single use: of two concurrent callers, only one can claim the row.
+    claimed = await db.fetch_unscoped(
+        "UPDATE cerebro.sessions SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL RETURNING id",
+        row["id"])
+    if not claimed:
+        raise _ended("refresh token already rotated")
+    new_refresh = await _open_session(row["user_id"], request)
+    await db.fetch_unscoped("UPDATE cerebro.users SET last_seen_at = now() WHERE id = $1", row["user_id"])
+    return _issue(response, user_id=str(row["user_id"]), tenant_id=str(row["tenant_id"]), role=row["role"],
+                  display_name=row["display_name"], refresh_token=new_refresh)
 
-    _set_session_cookie(response, access_token)
-    return LoginResponse(
-        user_id=user_id, tenant_id=tenant_id, role="owner",
-        display_name=req.name, access_token=access_token,
-    )
 
-
-@router.post("/logout", summary="Clear the session cookie")
-async def logout(response: Response) -> dict[str, str]:
+@router.post("/logout", summary="End this session: revoke its refresh token, clear cookies")
+async def logout(request: Request, response: Response, body: RefreshRequest | None = None) -> dict[str, str]:
+    token = (body.refresh_token if body else None) or request.cookies.get(_REFRESH_COOKIE)
+    if token and db.is_connected:
+        try:
+            await db.fetch_unscoped(
+                "UPDATE cerebro.sessions SET revoked_at = now() WHERE token_hash = $1 AND revoked_at IS NULL",
+                hash_token(token))
+        except Exception as exc:  # noqa: BLE001 - signing out locally must still succeed
+            log.warning("could not revoke session on logout: %s", exc)
     response.delete_cookie(_COOKIE_NAME, path="/")
+    response.delete_cookie(_REFRESH_COOKIE, path="/v1/auth")
     return {"status": "logged_out"}
 
 

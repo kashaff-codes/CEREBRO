@@ -50,6 +50,10 @@ class Settings:
 
         self.secret_key: str = os.getenv("SECRET_KEY", "")
         self.access_token_ttl_minutes: int = int(os.getenv("ACCESS_TOKEN_TTL_MINUTES", "60"))
+        # Refresh tokens: opaque, stored only as a SHA-256 hash in cerebro.sessions,
+        # rotated on every use. A signed-in analyst stays signed in this long
+        # without re-entering a password, and is signed out when it lapses.
+        self.refresh_token_ttl_days: int = int(os.getenv("REFRESH_TOKEN_TTL_DAYS", "30"))
 
         # Session cookie policy. For a SPLIT deploy — frontend on Netlify/Vercel,
         # API on Railway (different sites) — the cookie must be SameSite=None so

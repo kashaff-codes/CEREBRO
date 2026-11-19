@@ -1,6 +1,12 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { User, HistoryItem } from '../types';
-import { setToken, clearToken, authHeaders } from '../services/session';
+import {
+  SESSION_ENDED,
+  authFetch,
+  clearToken,
+  getRefreshToken,
+  setSession,
+} from '../services/session';
 
 // CEREBRO auth — backed by the FastAPI backend, not Firebase.
 //
@@ -8,7 +14,6 @@ import { setToken, clearToken, authHeaders } from '../services/session';
 // never touches JavaScript. Session is restored on load via /v1/auth/me. The
 // per-user scan history is kept in localStorage (the backend stays the source of
 // truth for detections; this is just the analyst's local log the dashboard shows).
-const API_BASE = import.meta.env.VITE_API_BASE ?? '';
 
 interface AuthContextType {
   user: User | null;
@@ -20,6 +25,8 @@ interface AuthContextType {
   removeFromHistory: (id: string) => Promise<void>;
   updateUser: (data: { name: string; email: string }) => Promise<void>;
   loading: boolean;
+  /** Why the user was signed out, when it was not their choice (e.g. session expired). */
+  notice: string | null;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -43,10 +50,10 @@ function saveHistory(userId: string, history: HistoryItem[]) {
 }
 
 async function apiFetch(path: string, options: RequestInit = {}) {
-  return fetch(`${API_BASE}${path}`, {
+  // authFetch attaches the session and renews an expired access token once.
+  return authFetch(path, {
     ...options,
-    credentials: 'include', // cookie works on desktop; Bearer covers mobile
-    headers: { 'Content-Type': 'application/json', ...authHeaders(), ...(options.headers || {}) },
+    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
   });
 }
 
@@ -79,6 +86,18 @@ function friendlyError(status: number, detail?: string): string {
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  // The session could not be renewed (it expired after 30 days, was signed out
+  // elsewhere, or was revoked): go to sign-in and say why.
+  useEffect(() => {
+    const ended = () => {
+      setUser(null);
+      setNotice('Your session has ended. Please sign in again.');
+    };
+    window.addEventListener(SESSION_ENDED, ended);
+    return () => window.removeEventListener(SESSION_ENDED, ended);
+  }, []);
 
   const hydrate = useCallback((profile: any): User => {
     const id: string = profile.user_id || profile.id;
@@ -122,7 +141,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
     if (!res.ok) throw new Error(friendlyError(res.status, await extractDetail(res)));
     const data = await res.json();
-    if (data.access_token) setToken(data.access_token);
+    if (data.access_token) setSession(data.access_token, data.refresh_token);
+    setNotice(null);
     setUser(hydrate(data));
   };
 
@@ -138,7 +158,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
     if (!res.ok) throw new Error(friendlyError(res.status, await extractDetail(res)));
     const data = await res.json();
-    if (data.access_token) setToken(data.access_token);
+    if (data.access_token) setSession(data.access_token, data.refresh_token);
+    setNotice(null);
     setUser(hydrate(data));
   };
 
@@ -150,7 +171,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const logout = async () => {
     try {
-      await apiFetch('/v1/auth/logout', { method: 'POST' });
+      await apiFetch('/v1/auth/logout', {
+        method: 'POST',
+        body: JSON.stringify({ refresh_token: getRefreshToken() || null }),
+      });
     } catch {
       /* clear locally regardless */
     }
@@ -193,6 +217,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         removeFromHistory,
         updateUser,
         loading,
+        notice,
       }}
     >
       {children}

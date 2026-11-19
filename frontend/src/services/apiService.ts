@@ -7,16 +7,13 @@
 // work the same in dev and prod. `VITE_API_BASE` overrides the origin in builds
 // that call a remote API directly.
 import { NewsAnalysisResult } from '../types';
-import { authHeaders } from './session';
-
-const API_BASE = import.meta.env.VITE_API_BASE ?? '';
+import { authFetch } from './session';
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, {
-    ...init,
-    headers: { ...(init.headers ?? {}), ...authHeaders() },
-    credentials: 'include', // Bearer covers mobile; cookie is a desktop bonus
-  });
+  // Bearer covers mobile; the cookie is a desktop bonus. An expired access token
+  // is renewed once here, so callers never see "token expired".
+  const response = await authFetch(path, init);
+  if (response.status === 401) throw new Error('Your session has ended. Please sign in again.');
 
   if (!response.ok) {
     const errText = await response.text();

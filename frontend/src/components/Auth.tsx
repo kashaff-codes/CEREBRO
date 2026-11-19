@@ -22,7 +22,7 @@ export const Auth: React.FC = () => {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
-  const { login, signup } = useAuth();
+  const { login, signup, notice } = useAuth();
 
   const switchMode = (toLogin: boolean) => {
     setIsLogin(toLogin);
@@ -191,6 +191,15 @@ export const Auth: React.FC = () => {
                 className={input}
               />
             </div>
+
+            {notice && !error && (
+              <p
+                role="status"
+                className="rounded-lg border border-brass-800 bg-brass-950/40 px-4 py-3 text-[13px] text-brass-200"
+              >
+                {notice}
+              </p>
+            )}
 
             {error && (
               <p
