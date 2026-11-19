@@ -62,6 +62,7 @@ def main() -> None:
     print(f"research: {'on' if os.getenv('ANTHROPIC_API_KEY') else 'OFF (no ANTHROPIC_API_KEY)'}"
           f"  depth: {'deep' if deep else 'standard'}\n")
 
+    spent: list[float] = []
     with TestClient(app) as c:
         tok = c.post("/v1/auth/login", json={"email": settings.demo_email,
                                              "password": settings.demo_password}).json()["access_token"]
@@ -95,8 +96,18 @@ def main() -> None:
                 if cl.get("topics"):
                     print(f"      explore: {[t['title'] for t in cl['topics']]} "
                           f"images={sum(1 for t in cl['topics'] if t.get('image'))}")
+            u = b.get("research_usage") or {}
+            if u:
+                # Opus 5.5 list price: $4 / $20 per million tokens; web search $10 per 1,000.
+                cost = u["input_tokens"] * 4e-6 + u["output_tokens"] * 20e-6 + u["web_search_requests"] * 0.01
+                spent.append(cost)
+                print(f"  research: {u['input_tokens']:,} in / {u['output_tokens']:,} out tokens, "
+                      f"{u['web_search_requests']} searches ≈ ${cost:.3f}")
             if b.get("related"):
                 print(f"  related coverage: {len(b['related'])} more articles")
+    if spent:
+        print()
+        print(f"research cost this run ≈ ${sum(spent):.2f} over {len(spent)} requests")
 
 
 if __name__ == "__main__":

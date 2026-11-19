@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { playCyberSFX } from '../utils/audio';
 import { Mark } from './Sidebar';
+import { DossierMap } from './DossierMap';
 
 /**
  * Sign in / create an account.
@@ -59,6 +60,19 @@ export const Auth: React.FC = () => {
 
   return (
     <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-slate-950 px-6 py-16">
+      {/* The dossier map, full-bleed and quiet: real land, real source locations,
+          a slow sweep. Masked toward the centre so the form stays the subject. */}
+      <div
+        className="pointer-events-none absolute inset-0 animate-iris"
+        style={{
+          maskImage:
+            'radial-gradient(ellipse at center, transparent 0%, transparent 22%, black 62%)',
+          WebkitMaskImage:
+            'radial-gradient(ellipse at center, transparent 0%, transparent 22%, black 62%)',
+        }}
+      >
+        <DossierMap className="h-full w-full" labels={false} opacity={0.9} />
+      </div>
       {/* Concentric rings: the barrel-sight motif, drawn once, very quietly. */}
       <svg
         className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 animate-iris"

@@ -30,6 +30,7 @@ import {
   Globe,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { DossierMap } from './DossierMap';
 
 // threatData removed. It was a hardcoded 7-day array rendered under the label
 // "[ THREAT ANALYTICS REAL-TIME OVERVIEW ]". Chart data now comes from
@@ -301,6 +302,21 @@ export const DashboardHome: React.FC<DashboardHomeProps> = ({ systemColor = 'blu
 
   return (
     <div className="space-y-6">
+      {/* 0. Where the evidence comes from */}
+      <section className="panel relative overflow-hidden">
+        <DossierMap className="block h-auto w-full" fit="meet" />
+        <div className="pointer-events-none absolute bottom-5 left-6">
+          <p className="label-caps">Evidence desk</p>
+          <p className="mt-1 font-display text-[22px] text-slate-100">
+            Where the evidence comes from
+          </p>
+          <p className="mt-1 max-w-md text-[13px] text-slate-400">
+            Live web research, Wikipedia and published fact-checks, weighted by how much each source
+            is trusted.
+          </p>
+        </div>
+      </section>
+
       {/* 1. Statistics Cards Deck */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
         <StatCard

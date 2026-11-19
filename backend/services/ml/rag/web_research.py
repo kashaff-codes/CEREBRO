@@ -21,8 +21,17 @@ evidence, weighted by source reliability, exactly like corpus documents. The
 prose is shown to the reader; the score is computed from the passages.
 
 Raw HTTP like the other providers in services/ml/providers/llm.py: no SDK is
-added to the free-tier image. Reads ANTHROPIC_API_KEY, and RESEARCH_MODEL
-falling back to CLAUDE_MODEL, the model the deployment already uses.
+added to the free-tier image. Reads ANTHROPIC_API_KEY (and ANTHROPIC_WORKSPACE_ID
+for user-scoped keys) and RESEARCH_MODEL, default claude-opus-5-5: this one call
+decides which claims are checked and which passages become evidence, so it gets
+the strongest model; the per-passage stance judge runs on CLAUDE_MODEL.
+
+Which search tool, and why it is the older one: web_search_20260209 filters
+results in a code sandbox before they reach the model, and in that mode the
+answer comes back split at citation boundaries but with every `citations` array
+empty (measured, Nov 2026). Citations are the evidence here, so this uses
+web_search_20250305, which returns web_search_result_location citations with
+the quoted passage.
 
 Cost, for the record (it is a product decision, not an accident): web search
 is billed per search on top of tokens. `standard` caps searches at 4 per
@@ -53,6 +62,9 @@ spelling, resolve names (people, companies, places, events) to their correct
 form, and restate questions as the statement being asked about ("did nvidia
 get fined" -> "Nvidia was fined"). Drop opinions and rhetoric. At most {max_claims}
 claims; merge near-duplicates.
+
+Today's date is {today}. Read "recently", "last week" or "this year" in the
+input relative to that date, and say how recent your sources are.
 
 Step 2. Search the web for each claim. Prefer primary sources, wire services and
 established outlets; for ongoing stories, prefer the most recent reporting and
@@ -94,6 +106,7 @@ class Research:
     searches: int = 0
     model: str = ""
     queries: list[str] = field(default_factory=list)
+    usage: dict[str, int] = field(default_factory=dict)
 
 
 def available() -> bool:
@@ -102,20 +115,23 @@ def available() -> bool:
 
 
 async def research(text: str, *, depth: str = "standard", max_claims: int = 5,
-                   timeout: float = 120.0) -> Research | None:
+                   timeout: float = 150.0) -> Research | None:
     """Normalise and research `text`. None when unavailable or on any failure."""
     if not available():
         return None
     import httpx
 
-    model = os.getenv("RESEARCH_MODEL") or os.getenv("CLAUDE_MODEL", "claude-sonnet-5")
-    tools = [{"type": "web_search_20260209", "name": "web_search",
+    from datetime import datetime, timezone
+
+    model = os.getenv("RESEARCH_MODEL") or "claude-opus-5-5"
+    tools = [{"type": "web_search_20250305", "name": "web_search",
               "max_uses": SEARCHES.get(depth, SEARCHES["standard"])}]
     messages: list[dict[str, Any]] = [{"role": "user", "content": text[:12000]}]
     body: dict[str, Any] = {
         "model": model,
         "max_tokens": 8000 if depth == "deep" else 5000,
-        "system": SYSTEM.format(max_claims=max_claims),
+        "system": SYSTEM.format(max_claims=max_claims,
+                                today=datetime.now(timezone.utc).strftime("%A %d %B %Y")),
         "tools": tools,
         "messages": messages,
     }
@@ -123,26 +139,45 @@ async def research(text: str, *, depth: str = "standard", max_claims: int = 5,
     headers = anthropic_headers(os.environ["ANTHROPIC_API_KEY"], VERSION)
 
     content: list[dict[str, Any]] = []
-    try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            for _ in range(MAX_CONTINUATIONS + 1):
-                r = await client.post(ENDPOINT, json=body, headers=headers)
-                r.raise_for_status()
-                data = r.json()
-                content = data.get("content", [])
-                if data.get("stop_reason") != "pause_turn":
-                    break
-                # The server-side loop paused. Resend the turn as it stands and
-                # the API resumes it; no "continue" message is added.
-                body["messages"] = messages + [{"role": "assistant", "content": content}]
-            if data.get("stop_reason") == "refusal":
-                log.warning("web research declined: %s", data.get("stop_details"))
-                return None
-    except Exception as exc:  # noqa: BLE001 - research is an enhancement, never fatal
-        log.warning("web research failed: %s", exc)
+    usage = {"input_tokens": 0, "output_tokens": 0, "web_search_requests": 0}
+    data: dict[str, Any] = {}
+    for attempt in range(2):
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                for _ in range(MAX_CONTINUATIONS + 1):
+                    r = await client.post(ENDPOINT, json=body, headers=headers)
+                    r.raise_for_status()
+                    data = r.json()
+                    u = data.get("usage") or {}
+                    usage["input_tokens"] += int(u.get("input_tokens") or 0)
+                    usage["output_tokens"] += int(u.get("output_tokens") or 0)
+                    usage["web_search_requests"] += int(
+                        (u.get("server_tool_use") or {}).get("web_search_requests") or 0)
+                    content = data.get("content", [])
+                    if data.get("stop_reason") != "pause_turn":
+                        break
+                    # The server-side loop paused. Resend the turn as it stands
+                    # and the API resumes it; no "continue" message is added.
+                    body["messages"] = messages + [{"role": "assistant", "content": content}]
+            break
+        except httpx.TimeoutException:
+            # A broad, current-events question can search for a long time. Try
+            # once more with half the search budget rather than giving up.
+            log.warning("web research timed out; retrying with fewer searches")
+            tools[0]["max_uses"] = max(2, tools[0]["max_uses"] // 2)
+            body["messages"] = messages
+        except Exception as exc:  # noqa: BLE001 - research is an enhancement, never fatal
+            log.warning("web research failed: %s", exc)
+            return None
+    else:
+        return None
+    if data.get("stop_reason") == "refusal":
+        log.warning("web research declined: %s", data.get("stop_details"))
         return None
 
-    return parse(content, model=data.get("model", model))
+    out = parse(content, model=data.get("model", model))
+    out.usage = usage
+    return out
 
 
 _HEAD = re.compile(r"^\s*(CLAIM|FINDING|EXPLORE)\s*:\s*", re.MULTILINE)

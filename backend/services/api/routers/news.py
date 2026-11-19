@@ -87,6 +87,7 @@ class NewsAnalyzeResponse(BaseModel):
     evidence_sources: dict[str, str] = {}
     related: list[dict[str, str]] = []
     depth: str = "standard"
+    research_usage: dict[str, int] = {}
 
 
 async def _load_corpus(tenant_id: str) -> list[Document]:
@@ -690,4 +691,5 @@ async def analyze_news(
         evidence_sources=source_status,
         related=(rs.related if rs else []),
         depth=req.depth,
+        research_usage=(rs.usage if rs else {}),
     )

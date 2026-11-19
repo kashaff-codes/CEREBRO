@@ -1,0 +1,36 @@
+{"id": "t01", "text": "Mount Everest is the highest mountain above sea level on Earth.", "label": "TRUE"}
+{"id": "t02", "text": "Pakistan won the 1992 Cricket World Cup.", "label": "TRUE"}
+{"id": "t03", "text": "Neil Armstrong was the first person to walk on the Moon.", "label": "TRUE"}
+{"id": "t04", "text": "The Berlin Wall fell in 1989.", "label": "TRUE"}
+{"id": "t05", "text": "Marie Curie won Nobel Prizes in both physics and chemistry.", "label": "TRUE"}
+{"id": "t06", "text": "The Eiffel Tower is in Paris.", "label": "TRUE"}
+{"id": "t07", "text": "Canberra is the capital of Australia.", "label": "TRUE"}
+{"id": "t08", "text": "Insulin was first isolated by Frederick Banting and Charles Best in 1921.", "label": "TRUE"}
+{"id": "t09", "text": "The Titanic sank in 1912 after hitting an iceberg.", "label": "TRUE"}
+{"id": "t10", "text": "The human heart has four chambers.", "label": "TRUE"}
+{"id": "t11", "text": "Nelson Mandela became president of South Africa in 1994.", "label": "TRUE"}
+{"id": "t12", "text": "Light from the Sun takes about eight minutes to reach Earth.", "label": "TRUE"}
+{"id": "t13", "text": "Pluto was reclassified as a dwarf planet in 2006.", "label": "TRUE"}
+{"id": "t14", "text": "NASA landed astronauts on the Moon in 1969.", "label": "TRUE"}
+{"id": "f01", "text": "The Great Wall of China is visible from the Moon with the naked eye.", "label": "FALSE"}
+{"id": "f02", "text": "Goldfish have a three-second memory.", "label": "FALSE"}
+{"id": "f03", "text": "Albert Einstein failed mathematics in school.", "label": "FALSE"}
+{"id": "f04", "text": "Vaccines cause autism in children.", "label": "FALSE"}
+{"id": "f05", "text": "5G mobile networks spread COVID-19.", "label": "FALSE"}
+{"id": "f06", "text": "Humans only use 10 percent of their brains.", "label": "FALSE"}
+{"id": "f07", "text": "The Eiffel Tower is in London.", "label": "FALSE"}
+{"id": "f08", "text": "Sydney is the capital of Australia.", "label": "FALSE"}
+{"id": "f09", "text": "Lightning never strikes the same place twice.", "label": "FALSE"}
+{"id": "f10", "text": "Bats are blind.", "label": "FALSE"}
+{"id": "f11", "text": "Drinking bleach cures COVID-19.", "label": "FALSE"}
+{"id": "f12", "text": "The Berlin Wall fell in 1979.", "label": "FALSE"}
+{"id": "f13", "text": "Thomas Edison invented the telephone.", "label": "FALSE"}
+{"id": "f14", "text": "Mount Kilimanjaro is the tallest mountain in the world.", "label": "FALSE"}
+{"id": "f15", "text": "The Apollo Moon landings were filmed in a studio.", "label": "FALSE"}
+{"id": "f16", "text": "Napoleon Bonaparte was unusually short, around five feet tall.", "label": "FALSE"}
+{"id": "u01", "text": "The town council of Quellingham, Ohio replaced its mayor with an AI system in March 2026.", "label": "UNVERIFIABLE"}
+{"id": "u02", "text": "A study by the Hollowmere Institute found that chess players live 14 years longer than non-players.", "label": "UNVERIFIABLE"}
+{"id": "u03", "text": "Zentrax Pharmaceuticals recalled its entire vaccine line last month.", "label": "UNVERIFIABLE"}
+{"id": "m01", "text": "eifel tower is in londn", "label": "FALSE"}
+{"id": "m02", "text": "did pakistan win the 92 world cup", "label": "TRUE"}
+{"id": "m03", "text": "is it true bats are blind", "label": "FALSE"}
