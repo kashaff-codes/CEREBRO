@@ -17,7 +17,7 @@ CREATE EXTENSION IF NOT EXISTS citext;
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
 CREATE SCHEMA IF NOT EXISTS cerebro;
-SET search_path TO cerebro, public;
+SET search_path TO cerebro, public, extensions;
 
 -- Embedding dimension. bge-base-en-v1.5 = 768. Change here if you swap models;
 -- note that changing it requires re-embedding the corpus.

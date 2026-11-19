@@ -19,7 +19,8 @@ CREATE EXTENSION IF NOT EXISTS citext;
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
 CREATE SCHEMA IF NOT EXISTS cerebro;
-SET search_path TO cerebro, public;
+-- extensions: Supabase installs pgvector there; absent elsewhere, which is harmless.
+SET search_path TO cerebro, public, extensions;
 
 -- =====================================================================
 -- Tenancy & identity

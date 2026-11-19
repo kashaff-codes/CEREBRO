@@ -88,7 +88,9 @@ class Database:
             max_size=10,
             # search_path so unqualified names resolve to the cerebro schema;
             # the queries qualify explicitly too, so this is belt-and-braces.
-            server_settings={"search_path": "cerebro,public"},
+            # "extensions" is where Supabase installs pgvector and friends: without
+            # it the vector type is invisible there. Harmless where it does not exist.
+            server_settings={"search_path": "cerebro,public,extensions"},
         )
         log.info("database pool created")
         # The realtime listener is best-effort: if LISTEN can't be established
