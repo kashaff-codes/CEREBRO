@@ -196,3 +196,105 @@ def test_labelled_upload_reports_its_own_accuracy(client, monkeypatch):
     assert s["format"] == "plain_csv" and lc["flows"] == s["flows"]
     assert lc["tp"] + lc["fp"] + lc["fn"] + lc["tn"] == lc["flows"]
     assert lc["recall"] > 0.5            # the shipped forest has seen these days; it must catch most
+
+
+# ── Gmail inbox scan, against a fake Gmail API ──────────────────────────────
+
+PHISH = (b'From: "PayPal Security" <alert@paypa1.com>\r\nReply-To: x@secure-paypa1.ru\r\n'
+         b'Authentication-Results: mx.google.com; spf=fail smtp.mailfrom=paypa1.com; dmarc=fail\r\n'
+         b'Subject: Urgent: your account has been limited\r\n\r\n'
+         b'Your account is suspended. Verify now at http://paypa1.com/login-verify within 24 hours.\r\n')
+CLEAN = (b'From: GitHub <noreply@github.com>\r\n'
+         b'Authentication-Results: mx.google.com; spf=pass smtp.mailfrom=github.com; '
+         b'dkim=pass header.d=github.com; dmarc=pass\r\n'
+         b'Subject: Your weekly digest\r\n\r\nThree new stars on your repository.\r\n')
+
+
+class _Resp:
+    def __init__(self, code, body):
+        self.status_code, self._body = code, body
+
+    def json(self):
+        return self._body
+
+
+class _FakeGmail:
+    """Just enough of httpx.AsyncClient for the list + get calls the scan makes."""
+    def __init__(self, *a, **k):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    async def get(self, url, headers=None, params=None):
+        import base64
+        assert headers["Authorization"] == "Bearer tok"
+        if url.endswith("/messages"):
+            assert "-in:sent" in params["q"]
+            return _Resp(200, {"messages": [{"id": "a"}, {"id": "b"}, {"id": "gone"}]})
+        mid = url.rsplit("/", 1)[1]
+        if mid == "gone":
+            return _Resp(404, {})
+        raw = {"a": PHISH, "b": CLEAN}[mid]
+        return _Resp(200, {"id": mid, "threadId": "t", "internalDate": "1795000000000", "labelIds": ["INBOX"],
+                           "raw": base64.urlsafe_b64encode(raw).decode().rstrip("=")})
+
+
+def test_gmail_scan_scores_the_inbox_and_builds_analytics(client, monkeypatch):
+    import httpx
+
+    from services.api.routers import gmail as G
+
+    async def token(_p):
+        return "tok"
+    monkeypatch.setattr(G, "_access_token", token)
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeGmail)
+    r = client.post("/v1/gmail/scan?max=500", headers={"Authorization": f"Bearer {_token(client)}"})
+    assert r.status_code == 200, r.text[:300]
+    body = r.json()
+    assert body["requested"] == 3 and body["scanned"] == 2          # the missing message is skipped, not fatal
+    first, second = body["messages"]
+    assert first["from_domain"] == "paypa1.com" and first["risk"] > second["risk"]   # riskiest first
+    assert first["verdict"] in {"phishing", "suspicious"} and second["verdict"] == "benign"
+    assert body["auth_pass_rate"]["spf"] == 0.5 and body["auth_pass_rate"]["dmarc"] == 0.5
+    assert dict(body["top_sender_domains"]) == {"paypa1.com": 1, "github.com": 1}
+    assert first["date"] == 1795000000
+
+
+def test_gmail_not_configured_is_a_clear_503(client, monkeypatch):
+    from services.api.core.config import settings
+    monkeypatch.setattr(settings, "google_client_id", "")
+    r = client.get("/v1/gmail/auth-url?origin=http://localhost:5173",
+                   headers={"Authorization": f"Bearer {_token(client)}"})
+    assert r.status_code == 503 and "GOOGLE_CLIENT_ID" in r.json()["detail"]
+
+
+def test_gmail_connect_refuses_when_gmail_permission_was_unticked(client, monkeypatch):
+    import time as _t
+
+    from services.api.routers import auth as A
+    from services.api.routers import gmail as G
+    calls = []
+
+    async def exchange(req, principal):
+        return {"scopes": ["openid", "email"]}          # user unticked the Gmail box
+    monkeypatch.setattr(A, "google_exchange", exchange)
+    monkeypatch.setattr(G.settings, "google_client_id", "id")
+    monkeypatch.setattr(G.settings, "google_client_secret", "s")
+    monkeypatch.setattr(G.settings, "token_encryption_key", "k")
+
+    async def fetch(*a):
+        calls.append(a[0])
+        return []
+    monkeypatch.setattr(G.db, "fetch_unscoped", fetch)
+    tok = _token(client)
+    from services.api.core.config import settings
+    from services.api.core.security import decode_access_token
+    uid = decode_access_token(tok, settings.secret_key)["sub"]
+    r = client.post("/v1/gmail/connect", headers={"Authorization": f"Bearer {tok}"},
+                    json={"code": "c", "state": G._sign(uid, int(_t.time())), "origin": "http://localhost:5173"})
+    assert r.status_code == 400 and "View your email" in r.json()["detail"]
+    assert any(c.startswith("DELETE") for c in calls)   # nothing half-connected is left behind

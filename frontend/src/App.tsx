@@ -42,7 +42,10 @@ const FILES: Record<View, { no: string; title: string; brief: string }> = {
 };
 
 const App: React.FC = () => {
-  const [currentView, setCurrentView] = useState<View>(View.DASHBOARD);
+  // Coming back from Google's Gmail consent screen lands on Mail forensics, which finishes the connection.
+  const [currentView, setCurrentView] = useState<View>(() =>
+    new URLSearchParams(window.location.search).has('code') ? View.EMAIL_SCANNER : View.DASHBOARD,
+  );
   const { user, loading } = useAuth();
 
   useEffect(() => {

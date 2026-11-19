@@ -111,11 +111,20 @@ async def connect(body: ConnectIn, principal: Principal = Depends(current_princi
     from services.api.routers.auth import GoogleExchangeRequest, google_exchange
     stored = await google_exchange(GoogleExchangeRequest(code=body.code, redirect_uri=_redirect_uri(body.origin)),
                                    principal)
+    if SCOPES[-1] not in (stored.get("scopes") or []):
+        # Google's consent screen lets people untick individual permissions.
+        await db.fetch_unscoped("DELETE FROM cerebro.oauth_credentials WHERE user_id = $1 AND provider = 'google'",
+                                principal.user_id)
+        raise HTTPException(400, "Google connected, but without permission to read Gmail. Connect again and "
+                                 "leave “View your email messages and settings” ticked.")
     token = await _access_token(principal)
     import httpx
     async with httpx.AsyncClient(timeout=15) as c:
         prof = await c.get(f"{GMAIL}/profile", headers={"Authorization": f"Bearer {token}"})
-    profile = prof.json() if prof.status_code == 200 else {}
+    if prof.status_code != 200:
+        raise HTTPException(502, f"Connected, but Gmail refused the first read ({prof.status_code}). "
+                                 "Check that the Gmail API is enabled for this Google Cloud project.")
+    profile = prof.json()
     return {"connected": True, "email": profile.get("emailAddress"),
             "messages_total": profile.get("messagesTotal"), "scopes": stored.get("scopes", [])}
 
