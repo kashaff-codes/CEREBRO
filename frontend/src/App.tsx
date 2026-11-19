@@ -26,7 +26,8 @@ const FILES: Record<View, { no: string; title: string; brief: string }> = {
   [View.CYBER_MONITOR]: {
     no: '02',
     title: 'Network watch',
-    brief: 'Traffic scored for anomalies by a trained detector.',
+    brief:
+      'Your logs scored by detectors trained on 2.8 million real flows, and checked against live threat feeds.',
   },
   [View.EMAIL_SCANNER]: {
     no: '03',

@@ -6,17 +6,16 @@
 // dev server proxies to the API (see vite.config.ts) so httpOnly session cookies
 // work the same in dev and prod. `VITE_API_BASE` overrides the origin in builds
 // that call a remote API directly.
-import { NewsAnalysisResult, CyberAnalysisResult, NetworkLog, ThreatLevel } from '../types';
+import { NewsAnalysisResult } from '../types';
 import { authHeaders } from './session';
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? '';
 
-async function postJSON<T>(path: string, body: unknown): Promise<T> {
+async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    ...init,
+    headers: { ...(init.headers ?? {}), ...authHeaders() },
     credentials: 'include', // Bearer covers mobile; cookie is a desktop bonus
-    body: JSON.stringify(body),
   });
 
   if (!response.ok) {
@@ -29,11 +28,30 @@ async function postJSON<T>(path: string, body: unknown): Promise<T> {
     } catch {
       /* non-JSON error body */
     }
-    throw new Error(detail || `Analysis failed: ${response.statusText}`);
+    throw new Error(detail || `Request failed (${response.status} ${response.statusText})`);
   }
 
-  return response.json() as Promise<T>;
+  const type = response.headers.get('content-type') ?? '';
+  return (type.includes('json') ? response.json() : response.text()) as Promise<T>;
 }
+
+export const getJSON = <T>(path: string): Promise<T> => request<T>(path);
+
+export const postJSON = <T>(path: string, body?: unknown): Promise<T> =>
+  request<T>(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+
+export const deleteJSON = <T>(path: string): Promise<T> => request<T>(path, { method: 'DELETE' });
+
+/** Multipart upload of one file under the field name `file`. */
+export const postFile = <T>(path: string, file: Blob, name: string): Promise<T> => {
+  const form = new FormData();
+  form.append('file', file, name);
+  return request<T>(path, { method: 'POST', body: form });
+};
 
 export const analyzeNewsText = async (
   text: string,
@@ -41,18 +59,4 @@ export const analyzeNewsText = async (
 ): Promise<NewsAnalysisResult> => {
   if (!text) throw new Error('Text is required for analysis');
   return postJSON<NewsAnalysisResult>('/v1/analyze/news', { text, depth });
-};
-
-export const analyzeNetworkLogs = async (logs: NetworkLog[]): Promise<CyberAnalysisResult> => {
-  const parsed = await postJSON<any>('/v1/analyze/flows', { logs });
-
-  // Map the backend's string threat level onto the enum the UI renders.
-  let level = ThreatLevel.LOW;
-  const incoming = parsed.threatLevel?.toUpperCase();
-  if (incoming === 'CRITICAL') level = ThreatLevel.CRITICAL;
-  else if (incoming === 'HIGH') level = ThreatLevel.HIGH;
-  else if (incoming === 'MEDIUM') level = ThreatLevel.MEDIUM;
-  else if (incoming === 'SAFE') level = ThreatLevel.SAFE;
-
-  return { ...parsed, threatLevel: level } as CyberAnalysisResult;
 };

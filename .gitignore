@@ -26,8 +26,10 @@ dist/
 data/raw/
 data/models/
 backend/data/
-backend/models/
+backend/models/*
+!backend/models/network/
 models/
+!backend/models/
 *.pt
 *.pkl
 *.joblib
@@ -41,3 +43,5 @@ models/
 # Playwright run output (screenshots, traces); baselines live in e2e/*-snapshots/
 frontend/test-results/
 frontend/playwright-report/
+# The network detectors ship as arrays (.npz) plus a model card: small, data not code,
+# and needed by the deployed API. Everything else under models/ stays local.

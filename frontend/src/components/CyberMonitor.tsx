@@ -1,452 +1,922 @@
-import React, { useState, useEffect } from 'react';
-import { NetworkLog, ThreatLevel, CyberAnalysisResult } from '../types';
-import { analyzeNetworkLogs } from '../services/apiService';
-import { authHeaders } from '../services/session';
-import { useAuth } from '../context/AuthContext';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { jsPDF } from 'jspdf';
-
-const API_BASE = import.meta.env.VITE_API_BASE ?? '';
+import { Download, FileUp, Play, RefreshCw } from 'lucide-react';
+import { getJSON, postFile } from '../services/apiService';
+import { useAuth } from '../context/AuthContext';
+import { playCyberSFX } from '../utils/audio';
 
 /**
- * Fetch real network flows from the CEREBRO backend.
+ * Network watch.
  *
- * This replaces generateMockLogs(), which fabricated 15 random flows and then
- * planted the answer into the input:
- *     logs[3].packetSize = 15000;
- *     logs[3].flags = 'SYN_FLOOD';
- * Nothing was ever detected — the anomaly was written in before analysis ran.
- *
- * Flows now come from Zeek/Suricata ingest via GET /v1/flows/recent.
+ * Two trained detectors, both measured on CIC-IDS2017 (2.8 million labelled
+ * flows of real traffic): an Isolation Forest that learned only what normal
+ * looks like, and a Random Forest that knows eight attack families. Three ways
+ * in: upload your own Zeek or flow log, replay real labelled test traffic with
+ * the true answer beside each verdict, or read the measured accuracy, including
+ * the numbers that are not flattering.
  */
-const fetchRecentFlows = async (limit = 25): Promise<NetworkLog[]> => {
-  const res = await fetch(`${API_BASE}/v1/flows/recent?limit=${limit}`, {
-    credentials: 'include',
-    headers: { ...authHeaders() },
-  });
-  if (!res.ok) {
-    throw new Error(
-      res.status === 401
-        ? 'Session expired. Please sign in again.'
-        : `Could not load network flows (${res.status})`,
-    );
-  }
-  const data = await res.json();
-  return (data.flows ?? []) as NetworkLog[];
+
+// ── API shapes ─────────────────────────────────────────────────────────────
+
+interface Feed {
+  feed: string;
+  label: string;
+  entries: number;
+  fetched_at: number;
+  ok: boolean;
+  error: string;
+}
+interface IntelHit {
+  feed: string;
+  label: string;
+  severity: string;
+  malware?: string;
+  netblock?: string;
+}
+interface Flow {
+  duration_s: number;
+  fwd_pkts: number;
+  bwd_pkts: number;
+  fwd_bytes: number;
+  bwd_bytes: number;
+  dst_port: number;
+  src_ip: string;
+  dst_ip: string;
+  proto: string;
+  ts: string;
+  label: string;
+  anomaly_score: number;
+  anomalous: boolean;
+  predicted_family: string;
+  family_confidence: number;
+  attack_probability: number;
+  intel?: IntelHit[];
+  true_family?: string;
+  day?: string;
+}
+interface Confusion {
+  tp: number;
+  fp: number;
+  fn: number;
+  tn: number;
+}
+interface LabelCheck extends Confusion {
+  flows: number;
+  recall: number | null;
+  precision: number | null;
+  false_positive_rate: number | null;
+}
+interface ScanResult {
+  summary: {
+    format: string;
+    flows: number;
+    seconds: number;
+    anomalous: number;
+    known_attack_flows: number;
+    by_family: Record<string, number>;
+    threat_level: Level;
+    recommended_action: string;
+    intel_hits: { ip: string; matches: IntelHit[] }[];
+    feeds: Feed[];
+    has_labels: boolean;
+    label_check: LabelCheck | null;
+  };
+  top: Flow[];
+}
+interface Replay {
+  source: string;
+  held_out?: string;
+  flows: Flow[];
+  isolation_forest: Confusion;
+  random_forest: Confusion;
+  either: Confusion;
+}
+interface Metrics {
+  precision: number;
+  recall: number;
+  f1: number;
+  false_positive_rate: number;
+  roc_auc: number;
+  pr_auc: number;
+}
+interface Card {
+  dataset: string;
+  flows: number;
+  families: Record<string, number>;
+  trained_at: string;
+  isolation_forest: {
+    trained_on: string;
+    threshold_rule: string;
+    test: string;
+    metrics: Metrics;
+    recall_by_family: Record<string, number>;
+    operating_points: {
+      false_alarm_budget: number;
+      recall: number;
+      precision: number;
+      test_false_positive_rate: number;
+    }[];
+  };
+  random_forest: {
+    classes: string[];
+    random_split: { attack_vs_normal: Metrics };
+    held_out_days: { attack_vs_normal: Metrics };
+    shipped_model: string;
+  };
+}
+
+type Level = 'Critical' | 'High' | 'Medium' | 'Safe';
+
+// ── vocabulary ─────────────────────────────────────────────────────────────
+
+const LEVEL: Record<Level, { tone: string; glyph: string }> = {
+  Critical: { tone: '#D2654E', glyph: '✕' },
+  High: { tone: '#D08A4E', glyph: '▲' },
+  Medium: { tone: '#C9A45C', glyph: '◆' },
+  Safe: { tone: '#86AD90', glyph: '●' },
 };
 
+const SEVERITY_TONE: Record<string, string> = {
+  critical: '#D2654E',
+  high: '#D08A4E',
+  info: '#7C776E',
+};
+
+const FEED_NAME: Record<string, string> = {
+  feodo: 'abuse.ch Feodo Tracker',
+  spamhaus_drop: 'Spamhaus DROP',
+  tor_exit: 'Tor exit relays',
+};
+
+const pct = (x: number | null | undefined, digits = 1) =>
+  x == null ? '—' : `${(x * 100).toFixed(digits)}%`;
+const int = (n: number) => n.toLocaleString('en-GB');
+const bytes = (n: number) =>
+  n >= 1e6 ? `${(n / 1e6).toFixed(1)} MB` : n >= 1e3 ? `${(n / 1e3).toFixed(1)} kB` : `${n} B`;
+const ago = (t: number) => {
+  if (!t) return 'never';
+  const m = Math.round((Date.now() / 1000 - t) / 60);
+  return m < 1 ? 'just now' : m < 60 ? `${m} min ago` : `${Math.round(m / 60)} h ago`;
+};
+
+// ── small parts ────────────────────────────────────────────────────────────
+
+const Stat: React.FC<{ label: string; value: string; note?: string; tone?: string }> = ({
+  label,
+  value,
+  note,
+  tone,
+}) => (
+  <div className="min-w-0">
+    <p className="label-caps mb-2">{label}</p>
+    <p className="font-display text-[34px] leading-none" style={{ color: tone ?? '#ECE6D9' }}>
+      {value}
+    </p>
+    {note && <p className="mt-2 text-[12.5px] leading-snug text-slate-500">{note}</p>}
+  </div>
+);
+
+const Verdict: React.FC<{ flow: Flow }> = ({ flow }) => {
+  const known = flow.predicted_family !== 'BENIGN';
+  const flagged = known || flow.anomalous;
+  return (
+    <span className="inline-flex items-center gap-2 text-[13px]">
+      <span style={{ color: flagged ? '#D2654E' : '#86AD90' }} aria-hidden="true">
+        {flagged ? '✕' : '●'}
+      </span>
+      <span className={flagged ? 'text-slate-100' : 'text-slate-400'}>
+        {known ? flow.predicted_family : flow.anomalous ? 'Unusual' : 'Normal'}
+      </span>
+    </span>
+  );
+};
+
+/** A 2×2 confusion grid: what was really an attack, against what was flagged. */
+const ConfusionGrid: React.FC<{ c: Confusion; caption: string }> = ({ c, caption }) => {
+  const cell = (n: number, label: string, good: boolean) => (
+    <div
+      className="rounded-lg border px-4 py-3"
+      style={{
+        borderColor: good ? 'rgba(134,173,144,0.25)' : 'rgba(210,101,78,0.25)',
+        background: good ? 'rgba(134,173,144,0.05)' : 'rgba(210,101,78,0.05)',
+      }}
+    >
+      <p className="font-display text-[26px] leading-none text-slate-100">{n}</p>
+      <p className="mt-1.5 text-[12px] text-slate-400">{label}</p>
+    </div>
+  );
+  return (
+    <figure>
+      <div className="grid grid-cols-2 gap-2">
+        {cell(c.tp, 'attacks caught', true)}
+        {cell(c.fn, 'attacks missed', false)}
+        {cell(c.fp, 'false alarms', false)}
+        {cell(c.tn, 'normal, left alone', true)}
+      </div>
+      <figcaption className="mt-2 text-[12px] text-slate-500">{caption}</figcaption>
+    </figure>
+  );
+};
+
+/** Recall as the false-alarm budget grows: the trade-off a SOC actually chooses. */
+const OperatingCurve: React.FC<{
+  points: Card['isolation_forest']['operating_points'];
+  shipped: number;
+}> = ({ points, shipped }) => {
+  const W = 520;
+  const H = 220;
+  const pad = { l: 44, r: 16, t: 14, b: 34 };
+  const maxX = Math.max(...points.map((p) => p.false_alarm_budget));
+  const x = (v: number) => pad.l + (v / maxX) * (W - pad.l - pad.r);
+  const y = (v: number) => H - pad.b - v * (H - pad.t - pad.b);
+  const d = points
+    .map((p, i) => `${i ? 'L' : 'M'}${x(p.false_alarm_budget)},${y(p.recall)}`)
+    .join(' ');
+  const len = points.reduce((acc, p, i) => {
+    if (!i) return 0;
+    const q = points[i - 1];
+    return (
+      acc + Math.hypot(x(p.false_alarm_budget) - x(q.false_alarm_budget), y(p.recall) - y(q.recall))
+    );
+  }, 0);
+  return (
+    <svg
+      viewBox={`0 0 ${W} ${H}`}
+      className="w-full"
+      role="img"
+      aria-label="Share of attacks caught at each false-alarm budget"
+    >
+      {[0, 0.25, 0.5, 0.75, 1].map((t) => (
+        <g key={t}>
+          <line x1={pad.l} x2={W - pad.r} y1={y(t)} y2={y(t)} stroke="rgba(236,230,217,0.07)" />
+          <text x={pad.l - 8} y={y(t) + 4} textAnchor="end" fontSize="10.5" fill="#6F6A62">
+            {t * 100}%
+          </text>
+        </g>
+      ))}
+      {points.map((p) => (
+        <text
+          key={p.false_alarm_budget}
+          x={x(p.false_alarm_budget)}
+          y={H - pad.b + 18}
+          textAnchor="middle"
+          fontSize="10.5"
+          fill="#6F6A62"
+        >
+          {Math.round(p.false_alarm_budget * 100)}%
+        </text>
+      ))}
+      <path
+        d={d}
+        fill="none"
+        stroke="#C9A45C"
+        strokeWidth="2"
+        strokeLinejoin="round"
+        className="animate-draw"
+        style={{ ['--len' as string]: len }}
+      />
+      {points.map((p) => {
+        const on = p.false_alarm_budget === shipped;
+        return (
+          <g key={p.false_alarm_budget}>
+            <circle
+              cx={x(p.false_alarm_budget)}
+              cy={y(p.recall)}
+              r={on ? 6 : 4}
+              fill={on ? '#C9A45C' : '#121215'}
+              stroke="#C9A45C"
+              strokeWidth="2"
+            >
+              <title>
+                {`${Math.round(p.false_alarm_budget * 100)}% false-alarm budget: catches ${pct(p.recall)} of attacks, ${pct(p.precision)} of alerts are real`}
+              </title>
+            </circle>
+            {on && (
+              <text
+                x={x(p.false_alarm_budget) + 10}
+                y={y(p.recall) - 10}
+                fontSize="11"
+                fill="#E2C487"
+              >
+                shipped
+              </text>
+            )}
+          </g>
+        );
+      })}
+    </svg>
+  );
+};
+
+const Bars: React.FC<{
+  rows: [string, number][];
+  max?: number;
+  format?: (v: number) => string;
+}> = ({ rows, max, format = (v) => pct(v, 0) }) => {
+  const top = max ?? Math.max(...rows.map((r) => r[1]), 1e-9);
+  return (
+    <ul className="space-y-2.5">
+      {rows.map(([name, v], i) => (
+        <li key={name} className="grid grid-cols-[120px_1fr_56px] items-center gap-3 text-[13px]">
+          <span className="truncate text-slate-300">{name}</span>
+          <span className="h-[6px] overflow-hidden rounded-full bg-[rgba(236,230,217,0.06)]">
+            <span
+              className="animate-rise block h-full rounded-full bg-brass-400"
+              style={{ width: `${Math.max(1.5, (v / top) * 100)}%`, animationDelay: `${i * 60}ms` }}
+            />
+          </span>
+          <span className="text-right font-mono text-[12px] text-slate-400">{format(v)}</span>
+        </li>
+      ))}
+    </ul>
+  );
+};
+
+const FlowTable: React.FC<{ flows: Flow[]; truth?: boolean }> = ({ flows, truth }) => (
+  <div className="custom-scrollbar max-h-[440px] overflow-auto rounded-xl border border-[var(--line)]">
+    <table className="w-full text-left text-[13px]">
+      <thead className="sticky top-0 bg-[#141417]">
+        <tr className="label-caps">
+          {truth ? (
+            <th className="px-4 py-3 font-semibold">Day</th>
+          ) : (
+            <th className="px-4 py-3 font-semibold">Source → destination</th>
+          )}
+          <th className="px-4 py-3 font-semibold">Port</th>
+          <th className="px-4 py-3 font-semibold">Packets ⇄</th>
+          <th className="px-4 py-3 font-semibold">Bytes ⇄</th>
+          <th className="px-4 py-3 font-semibold">Anomaly</th>
+          <th className="px-4 py-3 font-semibold">Verdict</th>
+          {truth && <th className="px-4 py-3 font-semibold">Really was</th>}
+        </tr>
+      </thead>
+      <tbody className="divide-y divide-[var(--line)]">
+        {flows.map((f, i) => {
+          const flagged = f.anomalous || f.predicted_family !== 'BENIGN';
+          const attack = truth ? f.true_family !== 'BENIGN' : false;
+          const right = flagged === attack;
+          return (
+            <tr key={i} className="transition-colors hover:bg-[rgba(236,230,217,0.025)]">
+              <td className="px-4 py-2.5 font-mono text-[12px] text-slate-400">
+                {truth ? (
+                  f.day
+                ) : (
+                  <>
+                    {f.src_ip || '—'} → {f.dst_ip || '—'}
+                    {f.intel && f.intel.length > 0 && (
+                      <span
+                        className="ml-2 rounded px-1.5 py-0.5 font-sans text-[10.5px]"
+                        style={{
+                          color: SEVERITY_TONE[f.intel[0].severity] ?? '#A29C90',
+                          border: `1px solid ${SEVERITY_TONE[f.intel[0].severity] ?? '#38363A'}55`,
+                        }}
+                        title={f.intel.map((h) => h.label).join('; ')}
+                      >
+                        {FEED_NAME[f.intel[0].feed] ?? f.intel[0].feed}
+                      </span>
+                    )}
+                  </>
+                )}
+              </td>
+              <td className="px-4 py-2.5 font-mono text-[12px] text-slate-300">{f.dst_port}</td>
+              <td className="px-4 py-2.5 font-mono text-[12px] text-slate-400">
+                {f.fwd_pkts} / {f.bwd_pkts}
+              </td>
+              <td className="px-4 py-2.5 font-mono text-[12px] text-slate-400">
+                {bytes(f.fwd_bytes)} / {bytes(f.bwd_bytes)}
+              </td>
+              <td className="px-4 py-2.5">
+                <span className="flex items-center gap-2">
+                  <span className="h-[5px] w-14 overflow-hidden rounded-full bg-[rgba(236,230,217,0.07)]">
+                    <span
+                      className="block h-full rounded-full"
+                      style={{
+                        width: `${Math.min(100, f.anomaly_score * 130)}%`,
+                        background: f.anomalous ? '#D2654E' : '#7C776E',
+                      }}
+                    />
+                  </span>
+                  <span className="font-mono text-[11.5px] text-slate-500">
+                    {f.anomaly_score.toFixed(2)}
+                  </span>
+                </span>
+              </td>
+              <td className="px-4 py-2.5">
+                <Verdict flow={f} />
+              </td>
+              {truth && (
+                <td className="px-4 py-2.5 text-[13px]">
+                  <span className={attack ? 'text-slate-100' : 'text-slate-400'}>
+                    {attack ? f.true_family : 'Normal'}
+                  </span>
+                  <span
+                    className="ml-2 text-[12px]"
+                    style={{ color: right ? '#86AD90' : '#D2654E' }}
+                    aria-label={right ? 'correct' : 'wrong'}
+                  >
+                    {right ? '✓' : '✕'}
+                  </span>
+                </td>
+              )}
+            </tr>
+          );
+        })}
+      </tbody>
+    </table>
+  </div>
+);
+
+// ── page ───────────────────────────────────────────────────────────────────
+
 export const CyberMonitor: React.FC = () => {
-  const [logs, setLogs] = useState<NetworkLog[]>([]);
-  const [analyzing, setAnalyzing] = useState(false);
-  const [result, setResult] = useState<CyberAnalysisResult | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [alert, setAlert] = useState<{ level: ThreatLevel; message: string } | null>(null);
   const { addToHistory } = useAuth();
-
-  const [loadingLogs, setLoadingLogs] = useState(true);
-
-  const loadFlows = async () => {
-    setLoadingLogs(true);
-    setError(null);
-    try {
-      setLogs(await fetchRecentFlows());
-    } catch (e: any) {
-      setError(e.message ?? 'Could not load network flows.');
-      setLogs([]);
-    } finally {
-      setLoadingLogs(false);
-    }
-  };
+  const [card, setCard] = useState<Card | null>(null);
+  const [feeds, setFeeds] = useState<Feed[] | null>(null);
+  const [scan, setScan] = useState<ScanResult | null>(null);
+  const [scanName, setScanName] = useState('');
+  const [replay, setReplay] = useState<Replay | null>(null);
+  const [busy, setBusy] = useState<'scan' | 'replay' | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [dragging, setDragging] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const resultRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    loadFlows();
+    getJSON<Card>('/v1/network/model')
+      .then(setCard)
+      .catch((e) => setError(e.message));
+    getJSON<Feed[]>('/v1/network/intel')
+      .then(setFeeds)
+      .catch(() => setFeeds([]));
   }, []);
 
-  const handleScan = async () => {
-    setAnalyzing(true);
-    setResult(null);
+  const runReplay = useCallback(async () => {
+    setBusy('replay');
     setError(null);
-    setAlert(null); // Reset alert on new scan
-
     try {
-      const analysis = await analyzeNetworkLogs(logs);
-      setResult(analysis);
+      setReplay(await getJSON<Replay>('/v1/network/replay?n=60'));
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setBusy(null);
+    }
+  }, []);
 
-      // Trigger Alert for High/Critical Threats
-      if (
-        analysis.threatLevel === ThreatLevel.CRITICAL ||
-        analysis.threatLevel === ThreatLevel.HIGH
-      ) {
-        setAlert({
-          level: analysis.threatLevel,
-          message: `Security Breach Detected: ${analysis.threatLevel} threat level identified. Immediate mitigation recommended.`,
-        });
-      }
+  useEffect(() => {
+    runReplay();
+  }, [runReplay]);
 
-      // Save to user history
+  const upload = async (file: Blob, name: string) => {
+    setBusy('scan');
+    setError(null);
+    setScan(null);
+    setScanName(name);
+    playCyberSFX('scan');
+    try {
+      const r = await postFile<ScanResult>('/v1/network/scan', file, name);
+      setScan(r);
+      if (r.summary.feeds?.length) setFeeds(r.summary.feeds);
+      playCyberSFX(r.summary.threat_level === 'Safe' ? 'success' : 'alarm');
       addToHistory({
-        id: Math.random().toString(36).substr(2, 9),
+        id: Math.random().toString(36).slice(2, 11),
         date: new Date().toISOString(),
         type: 'CYBER',
-        summary: analysis.analysisReport.substring(0, 80) + '...',
-        result: analysis.threatLevel,
+        summary: `${name}: ${r.summary.flows} flows, ${r.summary.anomalous} unusual, ${r.summary.intel_hits.length} feed matches`,
+        result: r.summary.threat_level,
       });
-    } catch (e: any) {
-      console.error(e);
-      setError(
-        e.message ||
-          'Failed to analyze network logs. Please check the API configuration and try again.',
+      setTimeout(
+        () => resultRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }),
+        80,
       );
+    } catch (e: any) {
+      playCyberSFX('alarm');
+      setError(e.message);
     } finally {
-      setAnalyzing(false);
+      setBusy(null);
     }
   };
 
-  const handleExportPDF = () => {
-    if (!result) return;
+  const trySample = async () => {
+    try {
+      const csv = await getJSON<string>('/v1/network/sample');
+      await upload(new Blob([csv], { type: 'text/csv' }), 'cic-ids2017-test-sample.csv');
+    } catch (e: any) {
+      setError(e.message);
+    }
+  };
+
+  const exportPDF = () => {
+    if (!scan) return;
+    const s = scan.summary;
     const doc = new jsPDF();
-    const margin = 20;
-    const pageWidth = doc.internal.pageSize.getWidth();
-    const maxLineWidth = pageWidth - margin * 2;
-
-    // Header
-    doc.setFontSize(22);
-    doc.setTextColor(142, 68, 173); // Purple
-    doc.text('CEREBRO', margin, 20);
-
-    doc.setFontSize(12);
-    doc.setTextColor(100);
-    doc.text('Cyber Threat Analysis Report', margin, 28);
-    doc.text(`Date: ${new Date().toLocaleString()}`, margin, 35);
-
-    doc.setDrawColor(200);
-    doc.line(margin, 40, pageWidth - margin, 40);
-
-    // Results
-    let y = 55;
-
-    doc.setFontSize(14);
-    doc.setTextColor(0);
-    doc.text(`Threat Level: ${result.threatLevel.toUpperCase()}`, margin, y);
-
-    if (result.threatLevel === 'Critical' || result.threatLevel === 'High') {
-      doc.setTextColor(231, 76, 60); // Red for high threats
-      doc.text('Action Required', pageWidth - margin - 40, y);
-    }
-    y += 15;
-
-    // Analysis Report
-    doc.setTextColor(0);
-    doc.setFontSize(12);
-    doc.setFont('helvetica', 'bold');
-    doc.text('AI Analysis Report', margin, y);
-    y += 7;
-    doc.setFont('helvetica', 'normal');
-    doc.setFontSize(10);
-    const analysisLines = doc.splitTextToSize(result.analysisReport, maxLineWidth);
-    doc.text(analysisLines, margin, y);
-    y += analysisLines.length * 5 + 10;
-
-    // Recommendation
-    doc.setFontSize(12);
-    doc.setFont('helvetica', 'bold');
-    doc.text('Recommended Mitigation', margin, y);
-    y += 7;
-    doc.setFont('helvetica', 'normal');
-    doc.setFontSize(10);
-    const actionLines = doc.splitTextToSize(result.recommendedAction, maxLineWidth);
-    doc.text(actionLines, margin, y);
-    y += actionLines.length * 5 + 10;
-
-    // Anomalies
-    if (result.anomaliesDetected.length > 0) {
-      doc.setFontSize(12);
-      doc.setFont('helvetica', 'bold');
-      doc.text('Anomalous Log IDs Detected', margin, y);
-      y += 7;
-      doc.setFont('helvetica', 'normal');
-      doc.setFontSize(10);
-      const anomalyText = result.anomaliesDetected.join(', ');
-      const anomalyLines = doc.splitTextToSize(anomalyText, maxLineWidth);
-      doc.text(anomalyLines, margin, y);
-    }
-
-    doc.save(`cerebro-cyber-scan-${Date.now()}.pdf`);
+    const m = 20;
+    const w = doc.internal.pageSize.getWidth() - m * 2;
+    let y = 22;
+    const line = (t: string, size = 10, bold = false, gap = 5) => {
+      doc.setFont('times', bold ? 'bold' : 'normal');
+      doc.setFontSize(size);
+      doc.splitTextToSize(t, w).forEach((l: string) => {
+        if (y > 280) {
+          doc.addPage();
+          y = 20;
+        }
+        doc.text(l, m, y);
+        y += gap;
+      });
+    };
+    line('CEREBRO — Network watch report', 18, true, 9);
+    line(`${scanName} · ${new Date().toLocaleString()}`, 9, false, 8);
+    line(`Threat level: ${s.threat_level}`, 13, true, 7);
+    line(s.recommended_action);
+    y += 3;
+    line(
+      `${s.flows} flows (${s.format}) · ${s.anomalous} unusual · ${s.known_attack_flows} matched a known attack family · ${s.intel_hits.length} threat-feed matches`,
+    );
+    if (s.label_check)
+      line(
+        `Against the file's own labels: caught ${pct(s.label_check.recall)} of attacks, ${pct(s.label_check.precision)} of flags correct.`,
+      );
+    y += 3;
+    line('Threat-feed matches', 12, true, 6);
+    if (!s.intel_hits.length) line('None.');
+    s.intel_hits.forEach((h) =>
+      line(
+        `${h.ip}: ${h.matches.map((x) => x.label + (x.malware ? ` (${x.malware})` : '')).join('; ')}`,
+      ),
+    );
+    y += 3;
+    line('Highest-risk flows', 12, true, 6);
+    scan.top
+      .slice(0, 25)
+      .forEach((f) =>
+        line(
+          `${f.src_ip || '—'} → ${f.dst_ip || '—'}:${f.dst_port} · ${f.predicted_family} (${pct(f.family_confidence, 0)}) · anomaly ${f.anomaly_score.toFixed(2)}${f.anomalous ? ' (unusual)' : ''}`,
+          9,
+        ),
+      );
+    y += 4;
+    line(
+      'Detectors: Isolation Forest (trained on normal traffic only) and Random Forest (8 families), both trained on CIC-IDS2017. Threat feeds: abuse.ch Feodo Tracker, Spamhaus DROP, Tor exit list.',
+      8,
+    );
+    doc.save(`cerebro-network-${Date.now()}.pdf`);
   };
 
-  const getThreatColor = (level: ThreatLevel) => {
-    switch (level) {
-      case ThreatLevel.CRITICAL:
-        return 'bg-red-500 text-white animate-pulse';
-      case ThreatLevel.HIGH:
-        return 'bg-orange-500 text-white';
-      case ThreatLevel.MEDIUM:
-        return 'bg-yellow-500 text-black';
-      case ThreatLevel.LOW:
-        return 'bg-blue-500 text-white';
-      default:
-        return 'bg-emerald-500 text-white';
-    }
-  };
+  const iso = card?.isolation_forest;
+  const rf = card?.random_forest;
+  const level = scan ? LEVEL[scan.summary.threat_level] : null;
 
   return (
-    <div className="max-w-6xl mx-auto space-y-6 animate-fade-in relative">
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-        <div>
-          <h2 className="text-3xl font-bold text-white">Cyber Threat Detection</h2>
-          <p className="text-slate-400">
-            Unsupervised Anomaly Detection (Isolation Forest + Autoencoder)
-          </p>
-        </div>
-        <button
-          onClick={handleScan}
-          disabled={analyzing}
-          className="bg-purple-600 hover:bg-purple-500 text-white px-6 py-2 rounded-lg font-semibold shadow-lg shadow-purple-500/20 disabled:opacity-50 transition-all"
+    <div className="space-y-8">
+      {/* Scan your own traffic + live feeds */}
+      <section className="grid gap-6 lg:grid-cols-[1fr_360px]">
+        {/* Drag-and-drop is a shortcut; the "Choose a log file" button is the keyboard path. */}
+        {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions */}
+        <div
+          role="region"
+          aria-label="Drop a traffic log here to score it"
+          className={`panel flex flex-col p-7 transition-colors ${dragging ? 'border-brass-600' : ''}`}
+          onDragOver={(e) => {
+            e.preventDefault();
+            setDragging(true);
+          }}
+          onDragLeave={() => setDragging(false)}
+          onDrop={(e) => {
+            e.preventDefault();
+            setDragging(false);
+            const f = e.dataTransfer.files?.[0];
+            if (f) upload(f, f.name);
+          }}
         >
-          {analyzing ? 'Scanning Network...' : 'Run AI Anomaly Check'}
-        </button>
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Network Log Table */}
-        <div className="lg:col-span-2 bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-lg">
-          <div className="p-4 border-b border-slate-800 bg-slate-950/50 flex justify-between items-center">
-            <h3 className="font-semibold text-slate-200">Live Network Traffic</h3>
-            <span className="text-xs text-slate-500 font-mono">
-              Sensor: {logs[0]?.sensor ?? 'zeek/eth0'}
-            </span>
-          </div>
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm text-left">
-              <thead className="bg-slate-950 text-slate-400 uppercase font-medium">
-                <tr>
-                  <th className="px-4 py-3">Time</th>
-                  <th className="px-4 py-3">Source</th>
-                  <th className="px-4 py-3">Dest</th>
-                  <th className="px-4 py-3">Proto</th>
-                  <th className="px-4 py-3">Size</th>
-                  <th className="px-4 py-3">Flags</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-800">
-                {logs.map((log) => {
-                  const isAnomalous = result?.anomaliesDetected.includes(log.id);
-                  return (
-                    <tr
-                      key={log.id}
-                      className={`hover:bg-slate-800/50 transition-colors ${isAnomalous ? 'bg-red-500/10' : ''}`}
-                    >
-                      <td className="px-4 py-3 font-mono text-slate-400">{log.timestamp}</td>
-                      <td className="px-4 py-3 text-slate-300">{log.sourceIP}</td>
-                      <td className="px-4 py-3 text-slate-300">{log.destIP}</td>
-                      <td className="px-4 py-3">
-                        <span
-                          className={`px-2 py-0.5 rounded text-xs font-bold ${
-                            log.protocol === 'TCP'
-                              ? 'bg-blue-500/20 text-blue-400'
-                              : log.protocol === 'UDP'
-                                ? 'bg-orange-500/20 text-orange-400'
-                                : 'bg-slate-700 text-slate-300'
-                          }`}
-                        >
-                          {log.protocol}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3 text-slate-300">{log.packetSize}B</td>
-                      <td className="px-4 py-3 text-xs font-mono text-slate-500">{log.flags}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-        {/* AI Analysis Panel */}
-        <div className="lg:col-span-1 space-y-6">
-          <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 h-full shadow-lg flex flex-col">
-            <h3 className="text-xl font-semibold mb-4 text-white">Threat Intelligence</h3>
-
-            {!result && !analyzing && !error && (
-              <div className="text-center py-12 text-slate-500 my-auto">
-                <svg
-                  className="w-16 h-16 mx-auto mb-4 opacity-20"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={1}
-                    d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"
-                  />
-                </svg>
-                <p>System Idle. Initiate scan to detect anomalies.</p>
-              </div>
-            )}
-
-            {analyzing && (
-              <div className="flex flex-col items-center justify-center py-12 space-y-4 my-auto">
-                <div className="w-12 h-12 border-4 border-purple-500 border-t-transparent rounded-full animate-spin"></div>
-                <p className="text-purple-400 animate-pulse">Scoring traffic…</p>
-              </div>
-            )}
-
-            {error && (
-              <div className="p-5 bg-red-500/10 border border-red-500/20 rounded-lg animate-fade-in my-auto">
-                <div className="flex items-center gap-2 text-red-400 mb-3">
-                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth={2}
-                      d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
-                    />
-                  </svg>
-                  <h4 className="font-semibold text-lg">Analysis Failed</h4>
-                </div>
-                <p className="text-sm text-slate-400 mb-4 leading-relaxed">
-                  {error.includes('leaked') || error.includes('403') ? (
-                    <>
-                      <span className="text-red-400 font-bold block mb-1">API KEY LEAKED:</span>
-                      Your server-side Gemini API key has been reported as leaked by Google. Please
-                      generate a new key and update it in the{' '}
-                      <span className="text-purple-400 underline font-bold">
-                        Settings &gt; Secrets
-                      </span>{' '}
-                      panel in AI Studio to restore full threat assessment.
-                    </>
-                  ) : (
-                    error
-                  )}
-                </p>
-                <button
-                  onClick={handleScan}
-                  className="w-full py-2.5 bg-red-500/20 hover:bg-red-500/30 text-red-400 rounded-lg text-sm font-medium transition-colors border border-red-500/20 flex items-center justify-center gap-2 cursor-pointer"
-                >
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth={2}
-                      d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
-                    />
-                  </svg>
-                  Retry Analysis
-                </button>
-              </div>
-            )}
-
-            {result && !analyzing && !error && (
-              <div className="space-y-6 animate-fade-in">
-                <div className="flex items-center justify-between bg-slate-950 p-4 rounded-lg border border-slate-800">
-                  <span className="text-slate-400 font-medium">Threat Level</span>
-                  <span
-                    className={`px-3 py-1 rounded-md text-sm font-bold uppercase ${getThreatColor(result.threatLevel)}`}
-                  >
-                    {result.threatLevel}
-                  </span>
-                </div>
-
-                <div>
-                  <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wide mb-2">
-                    Analysis Report
-                  </h4>
-                  <p className="text-sm text-slate-300 bg-slate-950/50 p-3 rounded-lg border border-slate-800 leading-relaxed">
-                    {result.analysisReport}
-                  </p>
-                </div>
-
-                <div>
-                  <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wide mb-2">
-                    Recommended Action
-                  </h4>
-                  <div className="flex items-start gap-2 text-sm text-emerald-400 bg-emerald-500/10 p-3 rounded-lg border border-emerald-500/20">
-                    <svg
-                      className="w-5 h-5 flex-shrink-0"
-                      fill="none"
-                      stroke="currentColor"
-                      viewBox="0 0 24 24"
-                    >
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        strokeWidth={2}
-                        d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
-                      />
-                    </svg>
-                    <span>{result.recommendedAction}</span>
-                  </div>
-                </div>
-
-                <div className="pt-2 border-t border-slate-800">
-                  <button
-                    onClick={handleExportPDF}
-                    className="w-full py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-sm font-medium flex items-center justify-center gap-2 transition-colors border border-slate-700 group"
-                  >
-                    <svg
-                      className="w-4 h-4 text-slate-400 group-hover:text-white transition-colors"
-                      fill="none"
-                      stroke="currentColor"
-                      viewBox="0 0 24 24"
-                    >
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        strokeWidth={2}
-                        d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"
-                      />
-                    </svg>
-                    Download Analysis PDF
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* Persistent, Non-intrusive Alert Notification */}
-      {alert && (
-        <div className="fixed bottom-8 right-8 z-50 animate-fade-in">
-          <div
-            className={`flex items-start gap-4 p-4 rounded-lg shadow-2xl border-l-4 max-w-sm bg-slate-900 ${
-              alert.level === ThreatLevel.CRITICAL
-                ? 'border-red-500 shadow-red-500/20'
-                : 'border-orange-500 shadow-orange-500/20'
-            }`}
-          >
-            <div
-              className={`p-2 rounded-full ${alert.level === ThreatLevel.CRITICAL ? 'bg-red-500/20 text-red-500' : 'bg-orange-500/20 text-orange-500'}`}
-            >
-              <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"
-                />
-              </svg>
-            </div>
-            <div className="flex-1">
-              <h4 className="font-bold text-white">Threat Alert</h4>
-              <p className="text-sm text-slate-300 mt-1">{alert.message}</p>
-            </div>
+          <p className="label-caps mb-3">Score your traffic</p>
+          <p className="max-w-[60ch] text-[15px] leading-relaxed text-slate-300">
+            Drop a Zeek <span className="font-mono text-[13px]">conn.log</span> (TSV or JSON), a
+            CICFlowMeter export, or any CSV with durations, packet and byte counts and a destination
+            port. Every flow is scored by both detectors, and every public address is checked
+            against three live threat feeds.
+          </p>
+          <div className="mt-6 flex flex-wrap items-center gap-3">
+            <input
+              ref={fileRef}
+              type="file"
+              accept=".log,.csv,.json,.tsv,.txt"
+              className="hidden"
+              data-testid="flow-file"
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) upload(f, f.name);
+                e.target.value = '';
+              }}
+            />
             <button
-              onClick={() => setAlert(null)}
-              className="text-slate-500 hover:text-white transition-colors"
+              onClick={() => fileRef.current?.click()}
+              disabled={busy !== null}
+              className="flex items-center gap-2 rounded-lg bg-brass-400 px-6 py-3 text-[14px] font-semibold text-[#16120A] transition-colors hover:bg-brass-300 disabled:opacity-40"
             >
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M6 18L18 6M6 6l12 12"
-                />
-              </svg>
+              <FileUp className="h-4 w-4" strokeWidth={2} />
+              {busy === 'scan' ? 'Scoring…' : 'Choose a log file'}
+            </button>
+            <button
+              onClick={trySample}
+              disabled={busy !== null}
+              className="rounded-lg border border-slate-700 px-4 py-3 text-[13px] text-slate-300 transition-colors hover:border-slate-500 hover:text-slate-100 disabled:opacity-40"
+            >
+              Try it with a labelled CIC-IDS2017 file
             </button>
           </div>
+          <p className="mt-auto pt-6 text-[12px] text-slate-500">
+            Up to 25 MB or 50,000 flows per file. Files are scored in memory and not stored; the
+            summary is kept in your history.
+          </p>
         </div>
+
+        <aside className="panel p-7">
+          <div className="mb-4 flex items-center justify-between">
+            <p className="label-caps">Live threat feeds</p>
+            <span className="file-no">refreshed hourly</span>
+          </div>
+          {feeds === null ? (
+            <p className="text-[13px] text-slate-500">Checking feeds…</p>
+          ) : feeds.length === 0 ? (
+            <p className="text-[13px] text-slate-500">Feed status unavailable.</p>
+          ) : (
+            <ul className="space-y-4">
+              {feeds.map((f) => (
+                <li key={f.feed} className="flex items-start justify-between gap-4">
+                  <div className="min-w-0">
+                    <p className="text-[14px] text-slate-200">{FEED_NAME[f.feed] ?? f.feed}</p>
+                    <p className="text-[12px] text-slate-500">{f.label}</p>
+                  </div>
+                  <div className="shrink-0 text-right">
+                    <p className="font-mono text-[13px] text-slate-200">
+                      {f.ok ? int(f.entries) : '—'}
+                    </p>
+                    <p className="text-[11.5px]" style={{ color: f.ok ? '#86AD90' : '#D2654E' }}>
+                      {f.ok ? `● ${ago(f.fetched_at)}` : `✕ unavailable`}
+                    </p>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+          <p className="mt-5 text-[12px] leading-relaxed text-slate-500">
+            A feed that fails to load is shown as unavailable, never as “no matches”.
+          </p>
+        </aside>
+      </section>
+
+      {error && (
+        <p
+          role="alert"
+          className="rounded-xl border border-signal-800 bg-signal-950/40 px-5 py-4 text-[14px] text-signal-200"
+        >
+          {error}
+        </p>
+      )}
+
+      {/* Scan result */}
+      {scan && level && (
+        <div ref={resultRef} className="space-y-6">
+          <section className="panel p-8">
+            <div className="grid gap-8 md:grid-cols-[1fr_auto] md:items-start">
+              <div>
+                <p className="label-caps mb-3">Threat level · {scanName}</p>
+                <p className="font-display text-[46px] leading-none" style={{ color: level.tone }}>
+                  <span className="mr-3 align-middle text-[30px]">{level.glyph}</span>
+                  {scan.summary.threat_level}
+                </p>
+                <p className="mt-3 max-w-[62ch] text-[16px] text-slate-300">
+                  {scan.summary.recommended_action}
+                </p>
+              </div>
+              <button
+                onClick={exportPDF}
+                className="flex items-center gap-2 self-start rounded-lg border border-slate-700 px-4 py-2 text-[13px] text-slate-300 transition-colors hover:border-slate-500"
+              >
+                <Download className="h-4 w-4" strokeWidth={1.6} /> Report (PDF)
+              </button>
+            </div>
+            <div className="hairline my-7" />
+            <div className="grid grid-cols-2 gap-6 md:grid-cols-4">
+              <Stat
+                label="Flows scored"
+                value={int(scan.summary.flows)}
+                note={`${scan.summary.format.replace('_', ' ')} · ${scan.summary.seconds}s`}
+              />
+              <Stat
+                label="Unusual"
+                value={int(scan.summary.anomalous)}
+                note="outside the learned normal"
+                tone={scan.summary.anomalous ? '#D08A4E' : undefined}
+              />
+              <Stat
+                label="Known attack"
+                value={int(scan.summary.known_attack_flows)}
+                note="matched a trained family"
+                tone={scan.summary.known_attack_flows ? '#D2654E' : undefined}
+              />
+              <Stat
+                label="Feed matches"
+                value={int(scan.summary.intel_hits.length)}
+                note="addresses on a live list"
+                tone={scan.summary.intel_hits.length ? '#D2654E' : undefined}
+              />
+            </div>
+          </section>
+
+          <section className="grid gap-6 lg:grid-cols-2">
+            <div className="panel p-7">
+              <p className="label-caps mb-5">What the classifier called each flow</p>
+              <Bars
+                rows={Object.entries(scan.summary.by_family).sort((a, b) => b[1] - a[1])}
+                format={(v) => int(v)}
+              />
+            </div>
+            <div className="panel p-7">
+              {scan.summary.label_check ? (
+                <>
+                  <p className="label-caps mb-1">Checked against the file’s own labels</p>
+                  <p className="mb-5 text-[13px] text-slate-500">
+                    This file says which flows were attacks, so the verdicts can be marked. One file
+                    is a small sample: read the measured accuracy below for the full picture.
+                  </p>
+                  <ConfusionGrid
+                    c={scan.summary.label_check}
+                    caption={`Caught ${pct(scan.summary.label_check.recall)} of attacks · ${pct(scan.summary.label_check.precision)} of flags were real · ${pct(scan.summary.label_check.false_positive_rate)} of normal flows flagged`}
+                  />
+                </>
+              ) : (
+                <>
+                  <p className="label-caps mb-5">Threat-feed matches</p>
+                  {scan.summary.intel_hits.length === 0 ? (
+                    <p className="text-[14px] text-slate-400">
+                      No address in this file is on Feodo Tracker, Spamhaus DROP or the Tor exit
+                      list right now.
+                    </p>
+                  ) : (
+                    <ul className="space-y-3">
+                      {scan.summary.intel_hits.map((h) => (
+                        <li key={h.ip} className="text-[13.5px]">
+                          <span className="font-mono text-slate-100">{h.ip}</span>
+                          {h.matches.map((x, i) => (
+                            <span
+                              key={i}
+                              className="ml-3"
+                              style={{ color: SEVERITY_TONE[x.severity] ?? '#A29C90' }}
+                            >
+                              {x.label}
+                              {x.malware ? ` · ${x.malware}` : ''}
+                              {x.netblock ? ` · ${x.netblock}` : ''}
+                            </span>
+                          ))}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </>
+              )}
+            </div>
+          </section>
+
+          <section className="panel p-7">
+            <p className="label-caps mb-5">
+              Highest-risk flows (top {Math.min(100, scan.top.length)})
+            </p>
+            <FlowTable flows={scan.top} />
+          </section>
+        </div>
+      )}
+
+      {/* Replay */}
+      <section className="panel p-7">
+        <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
+          <div>
+            <p className="label-caps mb-2">Replay · real labelled traffic</p>
+            <p className="max-w-[70ch] text-[14px] leading-relaxed text-slate-400">
+              Sixty flows drawn from the CIC-IDS2017 test days, scored live by the shipped
+              detectors, with the true answer beside each verdict. These flows were removed before
+              any model was trained, but they come from the same days the classifier learned from,
+              so expect its seen-days accuracy here. This is a replay of recorded traffic, not your
+              network.
+            </p>
+          </div>
+          <button
+            onClick={runReplay}
+            disabled={busy !== null}
+            className="flex items-center gap-2 rounded-lg border border-brass-700 px-4 py-2 text-[13px] text-brass-200 transition-colors hover:bg-brass-950 disabled:opacity-40"
+          >
+            {busy === 'replay' ? (
+              <RefreshCw className="h-4 w-4 animate-spin" strokeWidth={1.6} />
+            ) : (
+              <Play className="h-4 w-4" strokeWidth={1.6} />
+            )}
+            Draw another sixty
+          </button>
+        </div>
+        {replay ? (
+          <div className="grid gap-6 xl:grid-cols-[1fr_300px]">
+            <FlowTable flows={replay.flows} truth />
+            <div className="space-y-6">
+              <ConfusionGrid
+                c={replay.either}
+                caption="Either detector raising a flag, on this draw."
+              />
+              <div className="space-y-1.5 text-[12.5px] text-slate-400">
+                <p>
+                  Isolation Forest alone: {replay.isolation_forest.tp} caught,{' '}
+                  {replay.isolation_forest.fp} false alarms
+                </p>
+                <p>
+                  Random Forest alone: {replay.random_forest.tp} caught, {replay.random_forest.fp}{' '}
+                  false alarms
+                </p>
+              </div>
+            </div>
+          </div>
+        ) : (
+          <p className="text-[13px] text-slate-500">Loading the replay…</p>
+        )}
+      </section>
+
+      {/* Model card */}
+      {card && iso && rf && (
+        <section className="panel p-7">
+          <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
+            <div>
+              <p className="label-caps mb-2">How good is it · measured, not claimed</p>
+              <p className="max-w-[72ch] text-[14px] leading-relaxed text-slate-400">
+                Trained and tested on {card.dataset.split(',')[0]}: {int(card.flows)} labelled flows
+                over five working days, eight families of attack. Trained {card.trained_at}.
+              </p>
+            </div>
+          </div>
+
+          <div className="grid gap-8 lg:grid-cols-2">
+            <div>
+              <p className="text-[15px] text-slate-100">Isolation Forest · learns only normal</p>
+              <p className="mb-4 text-[12.5px] text-slate-500">
+                {iso.trained_on}. Never saw an attack. Threshold: {iso.threshold_rule}.
+              </p>
+              <OperatingCurve points={iso.operating_points} shipped={0.05} />
+              <p className="mt-1 text-center text-[11.5px] text-slate-500">
+                False-alarm budget on normal traffic → share of attacks caught
+              </p>
+              <table className="mt-4 w-full text-[12.5px]">
+                <thead>
+                  <tr className="label-caps text-left">
+                    <th className="py-1.5 font-semibold">Budget</th>
+                    <th className="py-1.5 font-semibold">Caught</th>
+                    <th className="py-1.5 font-semibold">Alerts real</th>
+                  </tr>
+                </thead>
+                <tbody className="font-mono text-slate-300">
+                  {iso.operating_points.map((o) => (
+                    <tr key={o.false_alarm_budget} className="border-t border-[var(--line)]">
+                      <td className="py-1.5">
+                        {Math.round(o.false_alarm_budget * 100)}%
+                        {o.false_alarm_budget === 0.05 && (
+                          <span className="ml-2 font-sans text-brass-300">shipped</span>
+                        )}
+                      </td>
+                      <td className="py-1.5">{pct(o.recall)}</td>
+                      <td className="py-1.5">{pct(o.precision)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <div>
+              <p className="text-[15px] text-slate-100">Random Forest · knows eight families</p>
+              <p className="mb-5 text-[12.5px] text-slate-500">{rf.shipped_model}.</p>
+              <div className="grid grid-cols-2 gap-6">
+                <Stat
+                  label="Seen days"
+                  value={pct(rf.random_split.attack_vs_normal.recall)}
+                  note={`attacks caught on a random hold-out · ${pct(rf.random_split.attack_vs_normal.precision)} of flags real`}
+                  tone="#86AD90"
+                />
+                <Stat
+                  label="Unseen days"
+                  value={pct(rf.held_out_days.attack_vs_normal.recall)}
+                  note={`trained Mon–Wed, tested Thu–Fri · ${pct(rf.held_out_days.attack_vs_normal.precision)} of flags real`}
+                  tone="#D08A4E"
+                />
+              </div>
+              <p className="mt-5 text-[13px] leading-relaxed text-slate-400">
+                The gap is the honest part. On traffic like what it learned from, the classifier
+                catches nearly everything. Against days and attack types it never saw, it catches
+                about a quarter. That is why the Isolation Forest runs beside it, and why the threat
+                feeds matter: they flag known-bad addresses no model has to learn.
+              </p>
+              <p className="label-caps mb-4 mt-7">Isolation Forest · caught by family</p>
+              <Bars
+                rows={Object.entries(iso.recall_by_family).sort((a, b) => b[1] - a[1])}
+                max={1}
+              />
+            </div>
+          </div>
+        </section>
       )}
     </div>
   );

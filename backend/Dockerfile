@@ -14,6 +14,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY services/ ./services/
 COPY scripts/ ./scripts/
 COPY db/ ./db/
+COPY models/ ./models/
 
 # Never run as root in a container that parses untrusted input.
 RUN useradd --create-home --shell /bin/false cerebro && chown -R cerebro:cerebro /app

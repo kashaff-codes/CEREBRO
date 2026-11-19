@@ -1,0 +1,224 @@
+{
+  "dataset": "CIC-IDS2017 (Canadian Institute for Cybersecurity, UNB), MachineLearningCVE CSVs",
+  "flows": 2830628,
+  "families": {
+    "BENIGN": 2272982,
+    "DoS/DDoS": 380688,
+    "PortScan": 158930,
+    "BruteForce": 13835,
+    "WebAttack": 2180,
+    "Bot": 1966,
+    "Infiltration": 36,
+    "Heartbleed": 11
+  },
+  "features": [
+    "log_duration",
+    "log_fwd_pkts",
+    "log_bwd_pkts",
+    "log_fwd_bytes",
+    "log_bwd_bytes",
+    "fwd_bytes_per_pkt",
+    "bwd_bytes_per_pkt",
+    "pkt_ratio",
+    "byte_ratio",
+    "log_pkts_per_s",
+    "log_bytes_per_s",
+    "port_well_known",
+    "port_registered",
+    "port_dynamic",
+    "no_response"
+  ],
+  "sklearn": "1.9.0",
+  "seed": 2026,
+  "trained_at": "2026-11-19 03:03 UTC",
+  "replay_sample": "351 flows from Tuesday-Friday, removed before any model was trained or evaluated; same days as the classifier's training data, so expect its seen-days numbers on them, not its unseen-days numbers",
+  "isolation_forest": {
+    "trained_on": "300,000 Monday flows (all normal)",
+    "threshold": 0.578933,
+    "threshold_rule": "95th percentile of scores on Tuesday's normal flows (5% false-alarm budget, no attacks seen)",
+    "operating_points": [
+      {
+        "false_alarm_budget": 0.01,
+        "threshold": 0.660228,
+        "recall": 0.0023,
+        "test_false_positive_rate": 0.0243,
+        "precision": 0.1178
+      },
+      {
+        "false_alarm_budget": 0.02,
+        "threshold": 0.631809,
+        "recall": 0.1135,
+        "test_false_positive_rate": 0.0362,
+        "precision": 0.8138
+      },
+      {
+        "false_alarm_budget": 0.05,
+        "threshold": 0.578933,
+        "recall": 0.2413,
+        "test_false_positive_rate": 0.0608,
+        "precision": 0.8469
+      },
+      {
+        "false_alarm_budget": 0.1,
+        "threshold": 0.537674,
+        "recall": 0.5658,
+        "test_false_positive_rate": 0.1268,
+        "precision": 0.8614
+      },
+      {
+        "false_alarm_budget": 0.2,
+        "threshold": 0.499194,
+        "recall": 0.8912,
+        "test_false_positive_rate": 0.22,
+        "precision": 0.8495
+      }
+    ],
+    "test": "957,535 flows, Tuesday-Friday: 557,535 attacks + normal",
+    "metrics": {
+      "precision": 0.8469,
+      "recall": 0.2413,
+      "f1": 0.3756,
+      "false_positive_rate": 0.0608,
+      "roc_auc": 0.8618,
+      "pr_auc": 0.8234,
+      "tp": 134546,
+      "fp": 24332,
+      "fn": 422989,
+      "tn": 375668
+    },
+    "recall_by_family": {
+      "Bot": 0.2873,
+      "BruteForce": 0.0,
+      "DoS/DDoS": 0.351,
+      "Heartbleed": 1.0,
+      "Infiltration": 0.2963,
+      "PortScan": 0.0018,
+      "WebAttack": 0.0389
+    },
+    "max_abs_diff_vs_sklearn": 2.7755575615628914e-16
+  },
+  "random_forest": {
+    "classes": [
+      "BENIGN",
+      "Bot",
+      "BruteForce",
+      "DoS/DDoS",
+      "Heartbleed",
+      "Infiltration",
+      "PortScan",
+      "WebAttack"
+    ],
+    "random_split": {
+      "attack_vs_normal": {
+        "precision": 0.9043,
+        "recall": 0.9974,
+        "f1": 0.9486,
+        "false_positive_rate": 0.0361,
+        "roc_auc": 0.9985,
+        "pr_auc": 0.9955,
+        "tp": 41052,
+        "fp": 4344,
+        "fn": 107,
+        "tn": 115885
+      },
+      "macro_f1": 0.7328,
+      "per_family": {
+        "BENIGN": {
+          "precision": 0.9991,
+          "recall": 0.9639,
+          "support": 120229
+        },
+        "Bot": {
+          "precision": 0.18,
+          "recall": 0.9805,
+          "support": 563
+        },
+        "BruteForce": {
+          "precision": 0.9616,
+          "recall": 0.9964,
+          "support": 4173
+        },
+        "DoS/DDoS": {
+          "precision": 0.9532,
+          "recall": 0.9954,
+          "support": 17909
+        },
+        "Heartbleed": {
+          "precision": 1.0,
+          "recall": 0.75,
+          "support": 4
+        },
+        "Infiltration": {
+          "precision": 0.125,
+          "recall": 0.3333,
+          "support": 3
+        },
+        "PortScan": {
+          "precision": 0.996,
+          "recall": 0.9997,
+          "support": 17854
+        },
+        "WebAttack": {
+          "precision": 0.4335,
+          "recall": 0.9127,
+          "support": 653
+        }
+      }
+    },
+    "held_out_days": {
+      "attack_vs_normal": {
+        "precision": 0.9494,
+        "recall": 0.3085,
+        "f1": 0.4657,
+        "false_positive_rate": 0.0102,
+        "roc_auc": 0.923,
+        "pr_auc": 0.8645,
+        "tp": 38297,
+        "fp": 2040,
+        "fn": 85836,
+        "tn": 197960
+      },
+      "macro_f1": 0.2256,
+      "per_family": {
+        "BENIGN": {
+          "precision": 0.6975,
+          "recall": 0.9898,
+          "support": 200000
+        },
+        "Bot": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "support": 1946
+        },
+        "BruteForce": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "support": 0
+        },
+        "DoS/DDoS": {
+          "precision": 0.9497,
+          "recall": 0.6346,
+          "support": 60000
+        },
+        "Infiltration": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "support": 27
+        },
+        "PortScan": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "support": 60000
+        },
+        "WebAttack": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "support": 2160
+        }
+      }
+    },
+    "shipped_model": "trained on 537,957 flows from all five days (balanced by family)",
+    "max_abs_diff_vs_sklearn": 5.329070518200751e-15
+  },
+  "seconds": 157.6
+}

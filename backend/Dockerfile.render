@@ -18,6 +18,7 @@ RUN pip install --no-cache-dir -r requirements-serve.txt
 COPY services/ ./services/
 COPY scripts/ ./scripts/
 COPY db/ ./db/
+COPY models/ ./models/
 
 RUN useradd --create-home --shell /bin/false cerebro && chown -R cerebro:cerebro /app
 USER cerebro

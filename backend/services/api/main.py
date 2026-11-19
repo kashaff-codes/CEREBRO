@@ -39,6 +39,8 @@ from services.api.routers import forecast as forecast_router
 from services.api.routers import health as health_router
 from services.api.routers import metrics as metrics_router
 from services.api.routers import network as network_router
+from services.api.routers import netwatch as netwatch_router
+from services.api.routers import gmail as gmail_router
 from services.api.routers import news as news_router
 from services.api.routers import stream as stream_router
 
@@ -269,6 +271,8 @@ app.include_router(health_router.router, tags=["system"])
 app.include_router(email_router.router, prefix="/v1", tags=["email"])
 app.include_router(news_router.router, prefix="/v1")
 app.include_router(network_router.router, prefix="/v1")
+app.include_router(netwatch_router.router, prefix="/v1")
+app.include_router(gmail_router.router, prefix="/v1")
 app.include_router(auth_router.router, prefix="/v1")
 app.include_router(metrics_router.router, prefix="/v1")
 app.include_router(flows_router.router, prefix="/v1")
