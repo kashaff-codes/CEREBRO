@@ -227,3 +227,13 @@ body {
 ::-webkit-scrollbar-thumb:hover {
   background: rgba(201, 164, 92, 0.45);
 }
+
+/* Browser autofill paints inputs its own blue-grey; keep the field on-palette. */
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus {
+  -webkit-text-fill-color: var(--ivory);
+  -webkit-box-shadow: 0 0 0 1000px #101013 inset;
+  caret-color: var(--ivory);
+  transition: background-color 9999s ease-out 0s;
+}
