@@ -55,14 +55,42 @@ that already exist.
 | Module | What it does | How it decides |
 |---|---|---|
 | **Email forensics** | Phishing / spoofing | ~35 deterministic signals from the raw RFC 5322 message — SPF/DKIM/DMARC + DKIM alignment, lookalike domains, Unicode homographs, URL tricks. A trained classifier (F1 0.97 on SpamAssassin) can be loaded to replace the heuristic prior. |
-| **Misinformation** | True / false / unverifiable | **Google Fact Check Tools API** returns real fact-checks (Full Fact, FactCheck.org, PolitiFact…) with ratings + **clickable source links**. Falls back to a hybrid-RAG check, then a transparent linguistic heuristic when nothing is found. |
+| **Misinformation** | True / false / unverifiable, for anything pasted in: a headline, a Reddit paragraph, several questions at once, typos and all | **Research**: Claude with web search restates the input as clean claims (fixing spelling, resolving names, turning questions into the statement asked about), searches the live web, and writes a cited finding per claim, including the correction when a claim is wrong. **Evidence**: the quoted passages it cited, plus Wikipedia (with images) and the curated corpus, each judged supports / refutes / unrelated from its own text. **Score**: a weighted mean of named components (evidence agreement, published fact-checks, language signals, an uncertainty prior) returned with the result, so every point can be traced to a passage with a URL. *Dig deeper* searches more widely. |
 | **Network anomaly** | Intrusions / attacks | Transparent rule-based triage (SYN floods, oversized packets, ICMP floods, scan sources) on labeled sample traffic. A real unsupervised model (IsolationForest + autoencoder, trainable on CIC-IDS2017) loads in when registered. |
 | **Dashboard** | Live metrics | Real counts over the `detections` table, event-driven via Postgres `NOTIFY` → WebSocket. |
 | **Auth** | Multi-tenant | scrypt + stdlib JWT (rejects `alg=none`), AES-GCM-encrypted OAuth tokens, row-level security in the database, Bearer-token sessions that work on iOS Safari. With no database, only the published demo account can sign in (constant-time check; `OFFLINE_DEMO_LOGIN=false` disables it). |
 | **Monitoring** | Prometheus | `GET /metrics`: database up, models loaded, LLM chain, request counts and latency per route — scraped with APOLLO-M's by [apollo-m/monitoring/hosted](https://github.com/kashaff-codes/apollo-m/tree/main/monitoring/hosted). |
 
-Every verdict carries a `score_source` (`heuristic` / `model` / `fact_check` /
-`rag_evidence`) so it's never mistaken for more certainty than it has.
+Every verdict carries a `score_source` and a `breakdown` of what the score was
+built from, so it's never mistaken for more certainty than it has.
+
+### How accurate is the news verifier? (measured, not claimed)
+
+[`backend/eval/claims.jsonl`](backend/eval/claims.jsonl) holds 36 labelled claims:
+true facts, popular myths, swapped names and dates, invented towns, institutes
+and companies (where the only right answer is "unverified"), and typo'd,
+unpunctuated versions. [`scripts/news_eval.py`](backend/scripts/news_eval.py)
+runs the real app against them; [`backend/eval/results.json`](backend/eval/results.json)
+has every row.
+
+| | Result |
+|---|---|
+| Overall | **35 / 36 correct (97.2%)** |
+| True claims → Credible | 14 / 15 (mean score 73) |
+| False claims → Fake News or Misleading | **18 / 18** (mean score 28) |
+| Invented entities → Unverified / Disputed | **3 / 3**: no invented answers |
+| Does the score separate true from false? | ROC AUC **1.0**: every true claim scored above every false one |
+| Cost and speed | ≈ $0.10 and 11 s per check (Claude Opus 5.5 research + web search) |
+
+The one miss exposed a real bug, since fixed: the verdict was decided on the
+unrounded score (64.6) while the page showed 65. Before this pipeline, the score
+sat at 50 for almost anything outside a 17-document corpus, and "NASA landed
+astronauts on the Moon in 1969" scored 17 / Fake News; tests now pin both.
+
+Run it yourself: put `ANTHROPIC_API_KEY` (and `ANTHROPIC_WORKSPACE_ID` for a
+user-scoped key) in the git-ignored `backend/.env`, then
+`python scripts/news_eval.py`, or `python scripts/news_battery.py` for messy,
+multi-question, current-events inputs with the full output printed.
 
 ---
 
@@ -124,7 +152,19 @@ python scripts/fetch_datasets.py                                  # SpamAssassin
 python scripts/train_email_classifier.py --phishing data/email/spam --benign data/email/ham \
     --out models/email_classifier.joblib                          # F1 ~0.97 → set EMAIL_CLASSIFIER_PATH
 ```
-Set `FACT_CHECK_API_KEY` (free from Google) for real news sources with citations.
+Set `ANTHROPIC_API_KEY` for live web research (the news verifier's main path;
+`RESEARCH_MODEL` defaults to `claude-opus-5-5`, `ANTHROPIC_WORKSPACE_ID` is needed
+for a user-scoped `sk-ant-usr-` key) and `FACT_CHECK_API_KEY` (free from Google)
+for published fact-checks. Without either, the verifier still runs on Wikipedia,
+GDELT and the curated corpus, and never says Credible or Fake News on word
+overlap alone.
+
+**Design.** The interface follows one system ("Dossier"): tuxedo black and ivory
+with a single brass accent; Bodoni Moda for what matters, Instrument Sans for
+everything else, IBM Plex Mono only for file metadata. The map behind sign-in and
+on the Overview is Natural Earth land as a dot matrix, with the agencies whose
+reporting the verifier weighs most at their real coordinates: no invented
+telemetry.
 
 ---
 
@@ -165,8 +205,10 @@ Stating these is what makes the rest credible.
 - **TFT forecasting** is scaffolded and validated on real data (see
   [`docs/STATUS.md`](docs/STATUS.md)) but needs ~2 weeks of accumulated
   `detections` history before it produces production forecasts.
-- The evidence-corpus RAG path is thin on the hosted instance; the Google Fact
-  Check API covers well-known claims, and the heuristic covers the rest.
+- The accuracy set is 36 claims; a production claim would need several hundred
+  (e.g. AVeriTeC) and a calibration check, not one run.
+- Live research costs about $0.10 per check; at volume it needs caching and a
+  per-tenant budget.
 
 ---
 
