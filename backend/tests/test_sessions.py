@@ -215,3 +215,17 @@ def test_refresh_round_trip_on_the_real_database():
             "refresh token already rotated"
         assert c.post("/v1/auth/logout", json={"refresh_token": r2.json()["refresh_token"]}).status_code == 200
         assert c.post("/v1/auth/refresh", json={"refresh_token": r2.json()["refresh_token"]}).status_code == 401
+
+
+def test_a_client_address_that_is_not_an_ip_is_stored_as_null(env):
+    # sessions.ip is inet: "testclient", a socket path or a proxy name must not break sign-in
+    c, fake = env
+    _login(c)
+    from services.api.routers.auth import _client_ip
+
+    class R:
+        class client:
+            host = "testclient"
+    assert _client_ip(R) is None
+    R.client.host = "203.0.113.9"
+    assert _client_ip(R) == "203.0.113.9"

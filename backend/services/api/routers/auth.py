@@ -103,6 +103,17 @@ def _set_refresh_cookie(response: Response, token: str) -> None:
                         path="/v1/auth")
 
 
+def _client_ip(request: Request) -> str | None:
+    """The caller's address if it is one: sessions.ip is inet, and a proxy, a
+    Unix socket or a test client can report something that is not."""
+    import ipaddress
+    host = request.client.host if request.client else None
+    try:
+        return str(ipaddress.ip_address(host)) if host else None
+    except ValueError:
+        return None
+
+
 async def _open_session(user_id: Any, request: Request) -> str:
     """Store a new session (hash only) and return its refresh token."""
     refresh_token = generate_token()
@@ -113,7 +124,7 @@ async def _open_session(user_id: Any, request: Request) -> str:
         """,
         user_id, hash_token(refresh_token),
         request.headers.get("user-agent"),
-        request.client.host if request.client else None,
+        _client_ip(request),
         session_expiry(settings.refresh_token_ttl_days),
     )
     return refresh_token
